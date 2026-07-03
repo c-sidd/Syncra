@@ -97,3 +97,96 @@ Our APIs return standardized HTTP status codes to indicate request outcomes:
     "non_field_errors": ["Unable to log in with provided credentials."]
   }
   ```
+
+---
+
+### B. Folder Management App (`folders/`)
+
+#### 1. List Root Contents (Dashboard)
+Returns all folders and files belonging to the user that are stored in their root directory (i.e. parent is `null`).
+* **Method**: `GET`
+* **URL**: `/api/folders/`
+* **Auth Required**: Yes (`Authorization: Token <key>`)
+* **Success Response (200 OK)**:
+  ```json
+  {
+    "current_folder": null,
+    "subfolders": [
+      {
+        "id": 1,
+        "name": "Work Documents",
+        "created_at": "2026-07-03T10:14:00Z"
+      }
+    ],
+    "files": [
+      {
+        "id": 1,
+        "name": "resume.pdf",
+        "file": "http://127.0.0.1:8000/media/uploads/resume.pdf",
+        "size": 1048576,
+        "uploaded_at": "2026-07-03T10:15:00Z"
+      }
+    ]
+  }
+  ```
+
+#### 2. View Folder Contents
+Returns folder metadata and lists all subfolders and files contained inside it.
+* **Method**: `GET`
+* **URL**: `/api/folders/<folder_id>/`
+* **Auth Required**: Yes (`Authorization: Token <key>`)
+* **Success Response (200 OK)**:
+  ```json
+  {
+    "current_folder": {
+      "id": 1,
+      "name": "Work Documents",
+      "parent": null,
+      "created_at": "2026-07-03T10:14:00Z"
+    },
+    "subfolders": [
+      {
+        "id": 2,
+        "name": "Invoices",
+        "created_at": "2026-07-03T10:16:00Z"
+      }
+    ],
+    "files": []
+  }
+  ```
+* **Error Response (404 Not Found)**:
+  ```json
+  {
+    "detail": "Not found."
+  }
+  ```
+
+#### 3. Create Folder
+Creates a new directory. If `parent` is `null`, it lives in the root directory. If `parent` is an integer, it is nested inside that folder.
+* **Method**: `POST`
+* **URL**: `/api/folders/`
+* **Auth Required**: Yes (`Authorization: Token <key>`)
+* **Request Body (JSON)**:
+  ```json
+  {
+    "name": "Invoices",
+    "parent": 1
+  }
+  ```
+* **Success Response (201 Created)**:
+  ```json
+  {
+    "id": 2,
+    "name": "Invoices",
+    "parent": 1,
+    "created_at": "2026-07-03T10:16:00Z"
+  }
+  ```
+* **Error Response (400 Bad Request)**:
+  ```json
+  {
+    "name": ["This field may not be blank."],
+    "parent": ["Invalid pk \"99\" - object does not exist."]
+  }
+  ```
+

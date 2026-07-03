@@ -39,7 +39,7 @@ Track your progress by changing `[ ]` to `[x]` as you complete each step.
 ---
 
 ## Milestone 4: Folder Management API
-- [ ] **Step 13**: Implement Folder CRUD APIs
+- [x] **Step 13**: Implement Folder CRUD APIs
 
 ---
 

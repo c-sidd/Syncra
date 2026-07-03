@@ -2090,6 +2090,276 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/auth/login/" -Method Post -Bod
 ## Next Step
 We will move to **Step 13: Folder APIs** (Milestone 4) to implement logical folder structures, subfolder creations, and listings.
 
+---
+
+# Step 13: Folder CRUD APIs
+
+## Goal
+Implement secure folder endpoints (`POST /api/folders/` to create a folder, `GET /api/folders/` to list root contents, and `GET /api/folders/<id>/` to list subfolder contents) that validate parent ownership and restrict access to the logged-in user.
+
+---
+
+## Why
+1. **Directory Virtualization**: Relational databases do not have real directories. We use database rows to represent folders. The API must let users create these rows and query nested items.
+2. **Access Control & IDOR Protection**: If we do not filter queries by the authenticated user, User A could guess Folder ID `5` and call `GET /api/folders/5/` to view User B's private files. This security vulnerability is called **Insecure Direct Object Reference (IDOR)**. We enforce authentication and filter all queries by `request.user`.
+3. **Parent Validation**: If User A tries to create a folder nested inside Parent Folder `12`, the backend must verify that Folder `12` exists **and** is owned by User A. If not, the API must reject the request.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `backend/folders/serializers.py` | **[NEW]** | Validates folder creation payload, ensuring the user owns the designated parent folder. |
+| `backend/folders/views.py` | **[MODIFY]** | Handles listing (root and subfolder contents) and folder creation logic. |
+| `backend/folders/urls.py` | **[NEW]** | Maps routes for folder endpoints. |
+| `backend/config/urls.py` | **[MODIFY]** | Connected folder urls to `/api/folders/` namespace. |
+
+---
+
+## Folder Structure
+Our updated structure showing the folder sub-app files:
+
+```text
+DriveClone/
+├── backend/
+│   ├── config/
+│   │   ├── urls.py (Modified)
+│   │   └── ...
+│   ├── folders/
+│   │   ├── migrations/
+│   │   ├── __init__.py
+│   │   ├── admin.py
+│   │   ├── apps.py
+│   │   ├── models.py
+│   │   ├── serializers.py (New)
+│   │   ├── tests.py
+│   │   ├── urls.py (New)
+│   │   └── views.py (Modified)
+│   └── ...
+└── ...
+```
+
+---
+
+## Code Explanation
+
+We will build the folder flow across 4 steps: Serializers, Views, Local URL maps, and Project URL maps.
+
+### 1. Create `backend/folders/serializers.py`
+This class handles validating and serializing folder data.
+
+```python
+from rest_framework import serializers
+from .models import Folder
+
+class FolderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Folder
+        # Expose the folder id, name, parent pointer, and creation date
+        fields = ('id', 'name', 'parent', 'created_at')
+        # Mark created_at as read-only. Clients cannot overwrite timestamps!
+        read_only_fields = ('created_at',)
+
+    # Dynamically restrict parent folder choices to only folders owned by the active user
+    def __init__(self, *args, **kwargs):
+        super(FolderSerializer, self).__init__(*args, **kwargs)
+        # 1. Grab the request object passed from the view context
+        request = self.context.get('request')
+        if request and request.user:
+            # 2. Filter the parent field's queryset to show only folders owned by this user
+            self.fields['parent'].queryset = Folder.objects.filter(user=request.user)
+```
+
+* **`self.fields['parent'].queryset = Folder.objects.filter(...)`**: **CRITICAL SECURITY MEASURE**. By default, DRF validates the `parent` foreign key against all folders in the database. If User A sets `parent` to User B's folder ID, DRF would allow it. Filtering the queryset by the active user restricts choice, causing DRF to reject cross-user nesting with a `400 Bad Request` validation error.
+
+---
+
+### 2. Update `backend/folders/views.py`
+We build `FolderListCreateView` to handle creating folders and listing root folders/files, and `FolderDetailView` to handle listing subfolder contents.
+
+```python
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from django.shortcuts import get_object_or_404
+from .models import Folder
+from .serializers import FolderSerializer
+# Import File model and its serializer (we will build this serializer inside files/serializers.py later)
+from files.models import File
+from rest_framework import serializers
+
+# Basic File Serializer placeholder to convert File rows to JSON in listings
+class CompactFileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = File
+        fields = ('id', 'name', 'file', 'size', 'uploaded_at')
+
+class FolderListCreateView(APIView):
+    # Require Token Authentication for all requests
+    permission_classes = [IsAuthenticated]
+
+    # GET /api/folders/ - List all folders and files at the ROOT level
+    def get(self, request):
+        # 1. Fetch folders owned by this user where parent is NULL (Root)
+        folders = Folder.objects.filter(user=request.user, parent__isnull=True)
+        # 2. Fetch files owned by this user where folder is NULL (Root)
+        files = File.objects.filter(user=request.user, folder__isnull=True)
+        
+        # 3. Serialize both lists to JSON
+        folder_serializer = FolderSerializer(folders, many=True)
+        file_serializer = CompactFileSerializer(files, many=True)
+        
+        # 4. Return combined dashboard contents
+        return Response({
+            "current_folder": None,
+            "subfolders": folder_serializer.data,
+            "files": file_serializer.data
+        }, status=status.HTTP_200_OK)
+
+    # POST /api/folders/ - Create a new folder
+    def post(self, request):
+        # Pass request in context so the serializer can filter parent choices
+        serializer = FolderSerializer(data=request.data, context={'request': request})
+        
+        if serializer.is_valid():
+            # Save folder record, explicitly attaching the authenticated request.user as the owner
+            serializer.save(user=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class FolderDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    # GET /api/folders/<id>/ - List contents of a specific folder
+    def get(self, request, pk):
+        # 1. Fetch the folder. Ensure the logged-in user owns it! (Prevents IDOR)
+        current_folder = get_object_or_404(Folder, pk=pk, user=request.user)
+        
+        # 2. Fetch nested folders and files inside this folder
+        subfolders = Folder.objects.filter(user=request.user, parent=current_folder)
+        files = File.objects.filter(user=request.user, folder=current_folder)
+        
+        # 3. Serialize data
+        folder_serializer = FolderSerializer(subfolders, many=True)
+        file_serializer = CompactFileSerializer(files, many=True)
+        
+        return Response({
+            "current_folder": FolderSerializer(current_folder).data,
+            "subfolders": folder_serializer.data,
+            "files": file_serializer.data
+        }, status=status.HTTP_200_OK)
+```
+
+* **`get_object_or_404(Folder, pk=pk, user=request.user)`**: Enforces security. If a user queries `/api/folders/99/` but Folder 99 is owned by another user, Django filters it out and returns a `404 Not Found` response instead of exposing the folder name.
+* **`many=True`**: Tells Django REST Framework that the serialized input is a query list (multiple database rows) rather than a single record, instructing it to compile JSON arrays `[...]`.
+
+---
+
+### 3. Create `backend/folders/urls.py`
+This maps URL paths to the folder views:
+
+```python
+from django.urls import path
+from .views import FolderListCreateView, FolderDetailView
+
+urlpatterns = [
+    # Map GET/POST /api/folders/
+    path('', FolderListCreateView.as_view(), name='folder-list-create'),
+    # Map GET /api/folders/<id>/
+    path('<int:pk>/', FolderDetailView.as_view(), name='folder-detail'),
+]
+```
+
+---
+
+### 4. Update `backend/config/urls.py`
+Connect folders app URL mapping to the main project route path:
+
+```python
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('api/auth/', include('users.urls')),
+    # Map all URLs starting with api/folders/ to the folders app router
+    path('api/folders/', include('folders.urls')),
+]
+```
+
+---
+
+## Request Lifecycle / Internals
+
+Trace path of listing subfolder contents:
+
+```text
+  [ Client Browser (GET /api/folders/5/) ]
+       ├── Includes Header: Authorization: Token <key>
+       ▼
+  [ TokenAuthentication Middleware ]
+       ├── Reads Token from headers. Matches database token row.
+       ├── Authenticates user. Attaches request.user = User(id=1, username="alex")
+       ▼
+  [ FolderDetailView.get(request, pk=5) ]
+       ├── 1. Queries DB: Folder.objects.get(id=5, user=User(id=1))
+       ├──    If Folder 5 user_id is NOT 1 -> Raises 404! (Transaction safe)
+       ├── 2. Queries subfolders: Folder.objects.filter(parent=5, user=1)
+       ├── 3. Queries nested files: File.objects.filter(folder=5, user=1)
+       ├── 4. Serializer parses result sets into list dictionaries
+       ▼
+  [ Client Browser (Axios Response) ]
+       <── Returns JSON containing subfolder and file lists with HTTP 200 OK
+```
+
+---
+
+## How to Debug
+
+How to test endpoints manually using PowerShell, injecting the authentication token key we generated in Step 12:
+
+### Create Folder Test Command:
+```powershell
+$headers = @{ Authorization = "Token 8a1c26aca4a3401ed528769dd2f37d719ceaa94b" }
+$body = @{ name="Work Documents"; parent=$null } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/folders/" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+```
+*(Replace Token with your actual token key from Step 12).*
+
+### List Root Contents Test Command:
+```powershell
+$headers = @{ Authorization = "Token 8a1c26aca4a3401ed528769dd2f37d719ceaa94b" }
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/folders/" -Method Get -Headers $headers
+```
+
+* **Common Errors**:
+  * **`HTTP 401 Unauthorized`**: You did not supply the `Authorization` header, or misspelled the token value.
+  * **`HTTP 404 Not Found`**: You requested a folder ID that does not exist or is owned by another user.
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Write the code files. Register the router URL paths.
+* **Task 2**: Start the server:
+  ```powershell
+  ..\venv\Scripts\python.exe manage.py runserver
+  ```
+* **Task 3**: Run the Create Folder test command in a separate PowerShell shell. Assert that the server returns `201 Created` and outputs the new folder ID (e.g. `1`).
+* **Task 4**: Run the List Root Contents command. Verify that the new folder is listed inside the `"subfolders"` JSON array.
+
+---
+
+## Knowledge Check
+1. **What is an IDOR (Insecure Direct Object Reference) security vulnerability, and how does `get_object_or_404(Folder, pk=pk, user=request.user)` prevent it?**
+2. **Why do we filter the parent queryset inside the `__init__` constructor of `FolderSerializer`?**
+3. **What is the difference between `/api/folders/` and `/api/folders/5/` in our API design?**
+
+---
+
+## Next Step
+We will move to **Step 14: Upload APIs** (Milestone 5) to implement file upload parsing and metadata validation rules.
+
+
 
 
 

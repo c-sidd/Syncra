@@ -21,4 +21,6 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     # Map all API authentication requests to users app routing
     path('api/auth/', include('users.urls')),
+    # Map all API folder requests to folders app routing
+    path('api/folders/', include('folders.urls')),
 ]
