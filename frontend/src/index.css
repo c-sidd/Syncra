@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+/* Import Premium Modern Typography from Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+
+/* Configure Custom Theme Tokens in Tailwind v4 */
+@theme {
+  --font-sans: 'Outfit', system-ui, -apple-system, sans-serif;
+}

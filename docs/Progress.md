@@ -54,10 +54,9 @@ Track your progress by changing `[ ]` to `[x]` as you complete each step.
 ---
 
 ## Milestone 6: Frontend Foundation
-- [ ] Scaffold React Project with Vite
-- [ ] Install and configure Tailwind CSS
-- [ ] Install Axios & React Router
-- [ ] Create `03_BackendGuide.md` and `04_FrontendGuide.md`
+- [x] **Step 20**: Frontend Setup (Vite, React Router, Tailwind, Axios)
+- [ ] **Step 21**: Create AuthContext
+- [ ] **Step 22**: Build Layout & Routing Tree
 
 ---
 

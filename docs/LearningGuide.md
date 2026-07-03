@@ -3293,6 +3293,103 @@ From the backend workspace directory, execute:
 ## Next Step
 We will move to **Milestone 6: Frontend Foundation** (Step 20) to initialize our React frontend application using Vite.
 
+---
+
+# Step 20: Frontend Setup
+
+## Goal
+Initialize our React client project using Vite, configure Tailwind CSS v4 using the `@tailwindcss/vite` compiler plugin, and set up Google Fonts.
+
+---
+
+## Why
+
+### 1. Vite Builder
+We use Vite instead of outdated frameworks (like Create React App) because Vite uses Native ES Modules (ESM) in development. Rather than rebuilding the entire project package on every file change, Vite only serves the modified modules, resulting in instant Hot Module Replacement (HMR) speeds.
+
+### 2. Tailwind CSS v4 (CSS-First Compiler)
+Tailwind v4 is built on a new Rust compiler engine. Key improvements:
+* **No `tailwind.config.js`**: Configurations are written directly in your CSS files using native `@theme` directives, unifying your design system.
+* **Vite Integration**: By registering `@tailwindcss/vite` as a plugin, Vite handles parsing your React JSX classnames and compiling utilities, making build times up to 10x faster.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `docs/03_Frontend.md` | **[NEW]** | Created client design document outlining folder directories, state layout router trees, and global contexts. |
+| `frontend/package.json` | **[MODIFY]** | Auto-scaffolded dependencies list. Registered client libraries (`react-router-dom`, `axios`) and styling plugins (`tailwindcss`, `@tailwindcss/vite`). |
+| `frontend/vite.config.js` | **[MODIFY]** | Registered the `@tailwindcss/vite` compiler plugin. |
+| `frontend/src/index.css` | **[MODIFY]** | Overwritten to import Tailwind directives, load Google Font **Outfit**, and set Outfit as the default sans-serif font family. |
+| `frontend/src/App.css` | **[MODIFY]** | Emptied to prevent layout conflicts. |
+
+---
+
+## Code Explanation
+
+We configure Tailwind CSS v4 using two files:
+
+### 1. `frontend/vite.config.js`
+We load the compiler plugin so Vite processes our styling classes:
+
+```javascript
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+
+# https://vite.dev/config/
+export default defineConfig({
+  plugins: [
+    react(),
+    tailwindcss(),
+  ],
+})
+```
+
+---
+
+### 2. `frontend/src/index.css`
+In Tailwind v4, `@import "tailwindcss";` replaces the three `@tailwind` directives from v3. We use the `@theme` directive to set our primary font variable:
+
+```css
+@import "tailwindcss";
+
+/* Import Premium Modern Typography from Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+
+/* Configure Custom Theme Tokens in Tailwind v4 */
+@theme {
+  --font-sans: 'Outfit', system-ui, -apple-system, sans-serif;
+}
+```
+
+* **`--font-sans: 'Outfit', ...`**: Binds the google font to Tailwind's `font-sans` helper class.
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Initialize the project. Run `npm install` packages as shown.
+* **Task 2**: Update `vite.config.js`, `index.css`, and `App.css`.
+* **Task 3**: Verify that the development server boots without warnings by running:
+  ```powershell
+  npm run dev
+  ```
+  Check that it launches on `http://localhost:5173/` or similar. Stop the server after verification.
+
+---
+
+## Knowledge Check
+1. **How is Tailwind CSS v4 configured differently from v3 (where is the theme extension written)?**
+2. **What does the `@theme` directive inside `index.css` accomplish in Tailwind v4?**
+3. **What is the advantage of using Vite over Create React App (CRA) in terms of HMR?**
+
+---
+
+## Next Step
+We will move to **Step 21: AuthContext** (Milestone 6) to build our global state manager tracking user credentials and HTTP tokens.
+
+
 
 
 
