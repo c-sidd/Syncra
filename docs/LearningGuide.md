@@ -1831,6 +1831,266 @@ What happens behind the scenes when you run `python manage.py migrate`:
 ## Next Step
 We will move to **Step 12: Authentication** (Milestone 3) to implement our secure registration and login endpoints.
 
+---
+
+# Step 12: Authentication APIs
+
+## Goal
+Implement register and login API endpoints under `/api/auth/` using Django REST Framework Token Authentication, validating inputs and returning secure keys to the client.
+
+---
+
+## Why
+
+### Design Decision: Token Auth vs. Sessions vs. JWT
+* **Sessions (Cookie-based)**: Stateful. The server stores session identifiers in memory or the database and places a cookie in the user's browser. While standard for web-apps, it is bound to browser cookie mechanisms. This makes mobile integration or third-party client integrations complex. It also complicates horizontal scaling because server instances must share a session store.
+* **JWT (JSON Web Tokens)**: Stateless. The server signs a token cryptographically and returns it to the client. The server doesn't save the token—it only verifies the signature. While excellent for scaling, it has a significant drawback: **Token Revocation is extremely difficult**. If a token is stolen, you cannot easily disable it before it naturally expires.
+* **DRF Token Auth (Chosen)**: A hybrid approach. Stateless on the client side (stored in headers, not cookies). Token objects are simple 40-character keys saved in PostgreSQL. Django queries the database on each request to match the token to a user. This is secure, highly compatible with any client (React, mobile apps), and **easy to revoke** (deleting the row in PostgreSQL instantly logs the user out).
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `docs/04_API.md` | **[NEW]** | Created API specification contract defining HTTP verbs, URL routes, JSON bodies, status codes, and headers. |
+| `backend/users/serializers.py` | **[NEW]** | Validates registration data and formats output JSON. |
+| `backend/users/views.py` | **[MODIFY]** | Handles register and login request logic and creates auth token records. |
+| `backend/users/urls.py` | **[NEW]** | Local routing maps for users endpoints. |
+| `backend/config/urls.py` | **[MODIFY]** | Connected user urls to `/api/auth/` namespace. |
+
+---
+
+## Folder Structure
+Our updated structure showing the authentication files:
+
+```text
+DriveClone/
+├── backend/
+│   ├── config/
+│   │   ├── urls.py (Modified)
+│   │   └── ...
+│   ├── users/
+│   │   ├── migrations/
+│   │   ├── __init__.py
+│   │   ├── admin.py
+│   │   ├── apps.py
+│   │   ├── models.py
+│   │   ├── serializers.py (New)
+│   │   ├── tests.py
+│   │   ├── urls.py (New)
+│   │   └── views.py (Modified)
+│   └── ...
+└── docs/
+    ├── 04_API.md (New)
+    └── ...
+```
+
+---
+
+## Code Explanation
+
+We will build the authentication flow across 4 steps: Serializers, Views, Local URL maps, and Project URL maps.
+
+### 1. Create `backend/users/serializers.py`
+This class handles user validation (making sure the username isn't taken, the email is valid, and the password is secure) and serializes the User object to output JSON.
+
+```python
+from rest_framework import serializers
+from django.contrib.auth.models import User
+
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'email')
+
+class RegisterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'email', 'password')
+        # Ensure password is write-only. It should never be returned in JSON outputs!
+        extra_kwargs = {'password': {'write_only': True}}
+
+    # Override the default create method to write passwords securely
+    def create(self, validated_data):
+        user = User.objects.create_user(
+            username=validated_data['username'],
+            email=validated_data['email'],
+            password=validated_data['password']
+        )
+        return user
+```
+
+* **`extra_kwargs = {'password': {'write_only': True}}`**: Prevents password leakage. When serializing user data back to the client, Django REST Framework will completely omit the password string.
+* **`User.objects.create_user`**: **CRITICAL FUNCTION**. Never save raw passwords (e.g. `User(password=...)`). This function hashes the password using **PBKDF2** with a SHA-256 hash and a unique salt. If hackers access our PostgreSQL database, they only see secure hashes, not actual user passwords.
+
+---
+
+### 2. Update `backend/users/views.py`
+We create views for Registration and Login. We write custom handlers to return the user's metadata alongside their Token key in a single response:
+
+```python
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.authtoken.models import Token
+from django.contrib.auth import authenticate
+from .serializers import RegisterSerializer, UserSerializer
+
+class RegisterView(APIView):
+    # Registration is public; it requires no credentials
+    permission_classes = []
+
+    def post(self, request):
+        # 1. Bind request data to the serializer
+        serializer = RegisterSerializer(data=request.data)
+        
+        # 2. Check inputs are valid (e.g., username is not already taken, fields are present)
+        if serializer.is_valid():
+            # 3. Create user record in PostgreSQL
+            user = serializer.save()
+            # 4. Generate a unique Authtoken key for this user
+            token, created = Token.objects.get_or_create(user=user)
+            # 5. Return Token and User JSON metadata with 201 Created status
+            return Response({
+                "token": token.key,
+                "user": UserSerializer(user).data
+            }, status=status.HTTP_201_CREATED)
+            
+        # 6. If validation fails, return errors dictionary with 400 Bad Request
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class LoginView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+        
+        # 1. Authenticate user credentials using Django's secure checkers
+        user = authenticate(username=username, password=password)
+        
+        if user is not None:
+            # 2. Retrieve or create the unique Auth Token for this user
+            token, created = Token.objects.get_or_create(user=user)
+            # 3. Return Token and User JSON
+            return Response({
+                "token": token.key,
+                "user": UserSerializer(user).data
+            }, status=status.HTTP_200_OK)
+            
+        # 4. If authentication fails, return error payload with 400 Bad Request
+        return Response({
+            "non_field_errors": ["Unable to log in with provided credentials."]
+        }, status=status.HTTP_400_BAD_REQUEST)
+```
+
+* **`authenticate(username=username, password=password)`**: Core Django security checker. It retrieves the user record by username, hashes the incoming password string using the stored salt, and compares the resulting hash against the stored hash in the database, protecting against timing attacks.
+* **`Token.objects.get_or_create(user=user)`**: Ensures every user has exactly one active token. If the user already has a token, it returns it; if it is their first time registering/logging in, it generates a random 40-character hex key string and saves it.
+
+---
+
+### 3. Create `backend/users/urls.py`
+This defines endpoint routes for our authentication view actions:
+
+```python
+from django.urls import path
+from .views import RegisterView, LoginView
+
+urlpatterns = [
+    path('register/', RegisterView.as_view(), name='register'),
+    path('login/', LoginView.as_view(), name='login'),
+]
+```
+
+---
+
+### 4. Update `backend/config/urls.py`
+We now connect our authentication app's URLs to the project's root router under `/api/auth/`:
+
+```python
+from django.contrib import admin
+from django.urls import path, include
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    # Map all URLs starting with api/auth/ to our users app router
+    path('api/auth/', include('users.urls')),
+]
+```
+
+---
+
+## Request Lifecycle / Internals
+
+Traced path of a registration request:
+
+```text
+  [ Client Browser (POST /api/auth/register/) ]
+                      │
+                      ▼
+  [ Root URL Router (config/urls.py) ]
+         ├── Matches path "api/auth/" -> forwards to users/urls.py
+         ▼
+  [ Users URL Router (users/urls.py) ]
+         ├── Matches path "register/" -> calls RegisterView
+         ▼
+  [ RegisterView.post(request) ]
+         ├── 1. Instantiates RegisterSerializer(data=request.data)
+         ├── 2. Runs field validations (checks required, email format, unique username)
+         ├── 3. Calls serializer.save() -> creates database row with hashed password
+         ├── 4. Token.objects.get_or_create() -> creates token row mapped to User
+         ├── 5. Response wraps token key & UserSerializer outputs
+         ▼
+  [ Client Browser (Axios) ]
+         <── Returns JSON: {"token": "79b32c...", "user": {"id": 1, ...}} with 201 status
+```
+
+---
+
+## How to Debug
+
+How to test endpoints manually without a frontend using a PowerShell script:
+
+### Register Test Command:
+```powershell
+$body = @{ username="testuser"; email="testuser@example.com"; password="testpassword" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/auth/register/" -Method Post -Body $body -ContentType "application/json"
+```
+
+### Login Test Command:
+```powershell
+$body = @{ username="testuser"; password="testpassword" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/auth/login/" -Method Post -Body $body -ContentType "application/json"
+```
+
+* **Common Errors**:
+  * **`HTTP 400 Bad Request`**: You sent invalid data, e.g., username already taken or email address malformed. Read the returned JSON keys to see what field failed validation.
+  * **`ModuleNotFoundError: No module named 'users.serializers'`**: You created `serializers.py` in the wrong folder or misspelled the import path.
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Write the code files. Register the URL router maps.
+* **Task 2**: Start the server using:
+  ```powershell
+  ..\venv\Scripts\python.exe manage.py runserver
+  ```
+* **Task 3**: Open a second PowerShell window, run the Register Test command, and see if it successfully outputs a Token key. Run it a second time and check if it throws a 400 error stating the username is already taken.
+
+---
+
+## Knowledge Check
+1. **Why do we use `User.objects.create_user` instead of `User.objects.create` when saving user records?**
+2. **What is the difference between a write-only field and a normal field inside a Serializer Meta definition?**
+3. **If a user inputs the wrong password, what HTTP status code does the API return, and what JSON payload is standard?**
+
+---
+
+## Next Step
+We will move to **Step 13: Folder APIs** (Milestone 4) to implement logical folder structures, subfolder creations, and listings.
+
+
 
 
 

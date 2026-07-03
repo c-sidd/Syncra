@@ -34,7 +34,7 @@ Track your progress by changing `[ ]` to `[x]` as you complete each step.
 ---
 
 ## Milestone 3: Authentication API
-- [ ] **Step 12**: Implement register/login API endpoints
+- [x] **Step 12**: Implement register/login API endpoints
 
 ---
 
