@@ -1027,6 +1027,815 @@ LookupError: No installed app with label 'users'
 ## Next Step
 We will move to **Step 7: Configure PostgreSQL** (Milestone 2) to hook up our database and replace the default SQLite developer database.
 
+---
+
+# Step 7: Configure PostgreSQL
+
+## Goal
+Install the PostgreSQL database adapter (`psycopg2-binary`) inside our virtual environment, configure Django settings to link with a local PostgreSQL server, and test the database connection socket.
+
+---
+
+## Why
+Django scaffolds default projects to use **SQLite** (represented as a single local file `db.sqlite3` in the workspace). While SQLite is fast for tiny apps, it has a single-writer constraint: if one user is uploading a file metadata record, other user connection write queries are blocked. To build a multi-user Google Drive Clone, we require a robust client-server database like **PostgreSQL** that supports high concurrency, row-level locking, and strict relational integrity constraints. We modify `settings.py` so that instead of referencing a local SQLite file, Django connects to a running PostgreSQL database service over the network.
+
+---
+
+## Commands
+
+```powershell
+# Install the PostgreSQL database driver binary
+.\venv\Scripts\pip.exe install psycopg2-binary
+```
+
+### Explanations:
+* `.\venv\Scripts\pip.exe`: Runs our isolated package manager.
+* `install`: Tells pip to fetch packages.
+* `psycopg2-binary`: A pre-compiled version of the PostgreSQL database driver for Python. It contains pre-built C binaries so it can be installed instantly without requiring Visual Studio or external C compiler libraries on your host operating system.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `docs/05_Database.md` | **[NEW]** | Conceptual guide file explaining relational databases, SQLite vs PostgreSQL, and driver connection lifecycles. |
+| `backend/config/settings.py` | **[MODIFY]** | Updated `DATABASES` settings dict to redirect database routing from SQLite to PostgreSQL. |
+
+---
+
+## Folder Structure
+Our updated structure at the end of Step 7:
+
+```text
+DriveClone/
+├── .gitignore
+├── backend/
+│   ├── config/
+│   │   ├── settings.py (Modified)
+│   │   └── ...
+│   └── ...
+├── frontend/
+├── venv/
+└── docs/
+    ├── 00_HowGoogleDriveWorks.md
+    ├── 01_ProjectOverview.md
+    ├── 02_Architecture.md
+    ├── 05_Database.md (New)
+    ├── 08_Git.md
+    ├── 09_Glossary.md
+    ├── LearningGuide.md
+    └── Progress.md
+```
+
+---
+
+## Code Explanation
+
+We must modify the `DATABASES` block inside `backend/config/settings.py`. Open settings.py and locate this default block:
+
+```python
+# Default SQLite Configuration (We will replace this)
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
+}
+```
+
+Replace it with the following PostgreSQL configuration:
+
+```python
+# PostgreSQL Configuration
+DATABASES = {
+    'default': {
+        # 1. Connect Django's ORM compiler to the PostgreSQL backend engine
+        'ENGINE': 'django.db.backends.postgresql',
+        # 2. Define the name of the database we created on our PG server
+        'NAME': 'driveclone',
+        # 3. Specify the username for database authentication
+        'USER': 'postgres',
+        # 4. Specify the password for database authentication
+        'PASSWORD': 'password',
+        # 5. Define where PostgreSQL is running (localhost means this same machine)
+        'HOST': '127.0.0.1',
+        # 6. Specify the network port PostgreSQL listens on (default is 5432)
+        'PORT': '5432',
+    }
+}
+```
+
+### Breakdown of Keys:
+* **`ENGINE`**: Instructs Django which database translator to use. `django.db.backends.postgresql` compiles our Python model commands into PostgreSQL-compatible dialect SQL.
+* **`NAME`**: The specific logical catalog inside your PostgreSQL server where our tables will be stored. You must create this database inside your server before running Django.
+* **`USER`**: The role name accessing the database. `postgres` is the default superuser created by PostgreSQL installers.
+* **`PASSWORD`**: Password set during PostgreSQL installation.
+* **`HOST`**: Network address. `127.0.0.1` (localhost) means the database is running on the same machine as the Django server.
+* **`PORT`**: Network port. `5432` is the standard port reserved for PostgreSQL.
+
+---
+
+## Request Lifecycle / Internals
+
+When Django boots or runs a query, it opens a network socket to PostgreSQL:
+
+```text
+  [ Django Server (python manage.py runserver) ]
+                     │
+         ├── 1. Reads config/settings.py DATABASES dict
+         ├── 2. Loads psycopg2-binary driver adapter
+         ▼
+  [ Socket Connection Request ]
+         ├── Opens TCP connection to 127.0.0.1:5432
+         ▼
+  [ PostgreSQL Server ]
+         ├── 3. Verifies credentials (USER: postgres, PASSWORD: password)
+         ├── 4. Verifies database exists (NAME: driveclone)
+         ▼
+  [ Handshake Succeeded ]
+         └── Connection socket is established. Query operations are now ready.
+```
+
+---
+
+## How to Debug
+
+If you misconfigure parameters or your server is stopped, Django will raise database connection errors. Learn how to read and solve them:
+
+### Error 1: Connection Refused
+```text
+django.db.utils.OperationalError: connection to server at "127.0.0.1", port 5432 failed: Connection refused
+```
+* **What it means**: Django tried to talk to port 5432 on your machine, but nothing answered. The PostgreSQL service is either not running, or is listening on a different port.
+* **How to fix it**: Start your PostgreSQL service:
+  * On Windows: Open the "Services" app (`services.msc`), find `postgresql`, and click **Start**.
+
+### Error 2: Database Does Not Exist
+```text
+django.db.utils.OperationalError: FATAL: database "driveclone" does not exist
+```
+* **What it means**: Django successfully connected to your PostgreSQL server, but couldn't find a database named `driveclone`.
+* **How to fix it**: You must create the database:
+  * Open pgAdmin (or run `psql` in command line).
+  * Right-click "Databases" -> Create -> Database...
+  * Name it `driveclone` and save.
+
+### Error 3: Authentication Failed
+```text
+django.db.utils.OperationalError: FATAL: password authentication failed for user "postgres"
+```
+* **What it means**: The username or password in `settings.py` is incorrect.
+* **How to fix it**: Check what password you set during the PostgreSQL database installation and write it exactly in `settings.py`.
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Install the `psycopg2-binary` driver.
+* **Task 2**: Connect to your PostgreSQL server using pgAdmin or the Command Line, and execute the SQL script:
+  ```sql
+  CREATE DATABASE driveclone;
+  ```
+* **Task 3**: Edit your `backend/config/settings.py` with your database credentials. Run `..\venv\Scripts\python.exe manage.py check` to verify that Django successfully loads without settings syntax errors.
+
+---
+
+## Knowledge Check
+1. **Why does Django need the `psycopg2-binary` library to talk to PostgreSQL?**
+2. **What does the `Connection refused` error message tell you about the state of your PostgreSQL service?**
+3. **If you change the value of `PASSWORD` in `settings.py` to a wrong password, which component throws the authentication error: Django, psycopg2, or PostgreSQL?**
+
+---
+
+## Next Step
+We will move to **Step 8: Install DRF** to install Django REST Framework to enable JSON-based API creation.
+
+---
+
+# Step 8: Install Django REST Framework (DRF)
+
+## Goal
+Install Django REST Framework (DRF) inside our virtual environment.
+
+---
+
+## Why
+1. **API Serialization**: Classical Django views are built to return HTML templates to the browser. However, our decoupled React frontend is responsible for rendering the UI; it only wants raw data from the server. DRF provides **Serializers** that convert complex database model objects into clean JSON payloads (and vice-versa).
+2. **Request Validation**: DRF automatically validates incoming JSON request payloads against defined model types, returning standard error messages and HTTP status codes (like `400 Bad Request`) if inputs are invalid.
+3. **Stateless Authentication**: DRF provides built-in modules for Token-based security, which is perfect for building RESTful APIs.
+
+---
+
+## Package Breakdown
+
+### 1. `djangorestframework`
+* **Purpose**: Web API toolkit for Django.
+* **Without it**: We would have to manually parse raw JSON request bodies, write complex logic to serialize database objects to dictionaries, and construct JSON responses by hand for every single view.
+* **When it runs / Where used**: Runs inside Django view handlers whenever an API endpoint is hit.
+
+---
+
+## Commands
+
+```powershell
+# Install Django REST Framework using pip
+.\venv\Scripts\pip.exe install djangorestframework
+```
+
+### Explanations:
+* `.\venv\Scripts\pip.exe`: Runs our isolated virtual environment package installer.
+* `install`: Subcommand telling pip to download packages.
+* `djangorestframework`: The package library name on PyPI.
+
+---
+
+## Files Created/Modified
+This step does not edit workspace files. It downloads libraries to the virtual environment folder:
+* **`venv/Lib/site-packages/rest_framework/`**: Contains DRF's code (views, serializers, authentication filters, routing utilities).
+
+---
+
+## Folder Structure
+Our folder structure remains unchanged.
+
+---
+
+## Code Explanation
+No code files were written in this step. The libraries are installed to local directories.
+
+---
+
+## Request Lifecycle / Internals
+
+Here is how DRF wraps a standard Django request to handle JSON APIs:
+
+```text
+  [ Client Browser (Axios POST) ]
+             │
+             ├── 1. Send JSON payload (e.g. {"name": "New Folder", "parent": 2})
+             ▼
+  [ Django URL Router ]
+             │
+             ├── 2. Routes request path to a DRF APIView
+             ▼
+  [ DRF APIView / ViewSet ]
+             ├── 3. Wraps raw Django request in a DRF "Request" object
+             ├── 4. Runs Authentication filters (Checks token key)
+             ├── 5. Passes request.data to Serializer for validation
+             │
+             ├── 6. (If Valid) Saves model: Folder.objects.create(...)
+             │
+             ├── 7. Serializer converts newly saved model object back into a Python dict
+             ▼
+  [ DRF Response Handler ]
+             ├── 8. Renders dict to JSON string and returns HTTP 201 Created
+             ▼
+  [ Client Browser (Axios) ]
+             <── 9. Receives JSON output: {"id": 15, "name": "New Folder", "parent": 2}
+```
+
+---
+
+## How to Debug
+
+### How to check if this step worked:
+1. Run this command in your terminal:
+   ```powershell
+   .\venv\Scripts\python.exe -c "import rest_framework; print(rest_framework.__version__)"
+   ```
+2. **Success Output**: Prints the installed DRF version number (e.g. `3.x.x`).
+3. **Failure Output**:
+   * If it raises `ImportError: No module named 'rest_framework'`, the package installer ran outside the virtual environment. Verify you used the correct pip.
+
+---
+
+## Try It Yourself / Exercises
+* **Task**: Run `.\venv\Scripts\pip list` in your terminal.
+* Observe that `djangorestframework` now appears in the list alongside `django`. Note how clean this virtual environment is—there are no unrelated packages!
+
+---
+
+## Knowledge Check
+1. **Why does React need Django REST Framework (DRF) instead of classical Django MTV views?**
+2. **What are the two primary tasks that a Serializer performs?**
+3. **If you send invalid data (e.g. text in an integer field) to a serializer, what does the serializer do?**
+
+---
+
+## Next Step
+We will move to **Step 9: Configure settings.py** to register our apps, configure DRF settings, and enable CORS to allow the React app to communicate with our server.
+
+---
+
+# Step 9: Configure settings.py
+
+## Goal
+Install the CORS headers package, register all local applications and third-party frameworks in `settings.py`, set up cross-origin request headers, and define our global Django REST Framework authentication policy.
+
+---
+
+## Why
+1. **App Registration**: Django cannot run database operations or discover models in our sub-apps unless they are declared in the `INSTALLED_APPS` registry.
+2. **CORS Security**: Web browsers block Javascript (React) requests loaded from origin `http://localhost:3000` from reading data from another origin `http://localhost:8000` (our Django backend) due to the **Same-Origin Policy**. To permit this interaction, the backend must return the header `Access-Control-Allow-Origin: http://localhost:3000`. We install `django-cors-headers` to manage these security headers automatically.
+3. **Authentication Default**: We configure Django REST Framework to use **Token Authentication**. This tells the API to check every request for a valid security token in the header and automatically match it to the requesting database User.
+
+---
+
+## Package Breakdown
+
+### 1. `django-cors-headers`
+* **Purpose**: A Django application for adding Cross-Origin Resource Sharing (CORS) headers to responses.
+* **Without it**: React will fail to read responses from our API endpoints. The browser console will block the request and show CORS errors.
+* **When it runs**: Runs as early-stage middleware on every incoming HTTP request.
+
+---
+
+## Commands
+
+```powershell
+# Install the CORS headers helper package
+.\venv\Scripts\pip.exe install django-cors-headers
+```
+
+### Explanations:
+* `pip.exe install`: Instructs pip to fetch the package.
+* `django-cors-headers`: The library name to download.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `backend/config/settings.py` | **[MODIFY]** | Registered `rest_framework`, `corsheaders`, `users`, `folders`, `files` apps. Inserted CORS middleware, and added CORS lists and DRF authentication blocks. |
+
+---
+
+## Folder Structure
+No new directories are created. The libraries live in `venv/Lib/site-packages/`.
+
+---
+
+## Code Explanation
+
+Here are the changes we must implement in `backend/config/settings.py`:
+
+### 1. Register Applications in `INSTALLED_APPS`
+Locate the `INSTALLED_APPS` list and update it:
+
+```python
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    
+    # Third-Party Libraries
+    'rest_framework',                  # Load Django REST Framework core
+    'rest_framework.authtoken',        # Load DRF Token Database tables
+    'corsheaders',                     # Load CORS headers middleware app
+    
+    # Local Apps
+    'users.apps.UsersConfig',          # Load local registration & login app
+    'folders.apps.FoldersConfig',      # Load nested directories manager app
+    'files.apps.FilesConfig',          # Load file manager & S3 sync app
+]
+```
+
+### 2. Configure CORS Middleware
+Locate the `MIDDLEWARE` list. **`CorsMiddleware` must be placed as high as possible**, especially before `CommonMiddleware` or any response-generating middleware:
+
+```python
+MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',          # CORS headers intercept filter (MUST be at the top)
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+```
+
+### 3. Add CORS Allowed Origins & DRF Configurations
+Scroll to the bottom of `settings.py` and append these configurations:
+
+```python
+# CORS Configuration: Tell Django which external client origins are allowed to connect
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",       # React development server (default host)
+    "http://127.0.0.1:3000",       # Alternate localhost IP
+]
+
+# Django REST Framework Settings
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        # Configure DRF to use token authentication by default for all API endpoints
+        'rest_framework.authentication.TokenAuthentication',
+    ],
+}
+```
+
+---
+
+## Request Lifecycle / Internals
+
+How CORS and Authentication intercept requests inside settings:
+
+```text
+  [ Client Browser (React: http://localhost:3000) ]
+             │
+             ├── 1. POST /api/folders/ (Headers: Authorization: Token abc123xyz)
+             ▼
+  [ Django Server Middleware Layer ]
+         │
+         ├── 2. CorsMiddleware: Intercepts request. Checks origin against CORS_ALLOWED_ORIGINS.
+         ├──    Origin matches! Appends Access-Control-Allow-Origin headers.
+         ▼
+  [ DRF Request Parser ]
+         │
+         ├── 3. TokenAuthentication checks header: "Token abc123xyz"
+         ├── 4. Queries Postgres table: rest_framework_authtoken
+         ├──    Matches token to User #1 database row.
+         ├── 5. Populates request.user = User(id=1, username="alex")
+         ▼
+  [ Django View Handler ]
+         └── 6. Executes code knowing exactly which authenticated user sent the request.
+```
+
+---
+
+## How to Debug
+
+### Common Pitfalls:
+* **Preflight CORS failure**: If you run React and call APIs but see CORS console blockers, check that:
+  1. `'corsheaders.middleware.CorsMiddleware'` is listed **first** in the `MIDDLEWARE` block. If listed below `CommonMiddleware`, Django might redirect or return standard page configurations before the CORS headers are attached.
+  2. The URL includes the correct protocol (`http://` vs `https://`). `localhost:3000` is invalid in CORS; it must be `"http://localhost:3000"`.
+
+---
+
+## Try It Yourself / Exercises
+* **Task**: Install the package. Add the configurations to `settings.py`.
+* Run `..\venv\Scripts\python.exe manage.py check` to make sure there are no typos. If Django raises errors like `ModuleNotFoundError: No module named 'corsheaders'`, verify the pip install finished successfully.
+
+---
+
+## Knowledge Check
+1. **Why must `CorsMiddleware` be placed above `CommonMiddleware` inside settings?**
+2. **What does the `rest_framework.authtoken` app do when registered inside `INSTALLED_APPS`?**
+3. **If React runs on port 5173 instead of 3000, what setting must you modify in settings.py?**
+
+---
+
+## Next Step
+We will move to **Step 10: Create Models** (Milestone 2) to build our relational database representations for User, Folder, and File entities.
+
+---
+
+# Step 10: Create Models
+
+## Goal
+Define the relational database tables for our Google Drive Clone using Python classes in `folders/models.py` and `files/models.py`.
+
+---
+
+## Why
+Rather than writing raw SQL tables manually (e.g. `CREATE TABLE folders (...)`), we use Django's **Object-Relational Mapper (ORM)**. The ORM lets us write Python classes called **Models** which represent database tables.
+1. **`User` (Built-in)**: We use Django's default built-in user authentication model. It contains fields for usernames, emails, and securely hashed passwords using PBKDF2.
+2. **`Folder`**: Stores directory catalogs. It uses a self-referential foreign key (`parent = ForeignKey('self')`) to implement the Adjacency List pattern. This allows a folder to contain other folders, creating a nested tree hierarchy.
+3. **`File`**: Tracks metadata for uploaded objects. It holds the file name, size, upload date, a foreign key linking it to a parent `Folder` (or `null` if it resides in the root directory), and a `FileField` that points to S3 storage.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `backend/folders/models.py` | **[MODIFY]** | Created the `Folder` database model class. |
+| `backend/files/models.py` | **[MODIFY]** | Created the `File` database model class linking to User and Folder. |
+| `docs/05_Database.md` | **[MODIFY]** | Appended visual database schemas, column definitions, and cascading deletes documentation. |
+
+---
+
+## Folder Structure
+Our file tree remains unchanged; models are defined inside local app folders.
+
+---
+
+## Code Explanation
+
+We will modify three files.
+
+### 1. Update `backend/folders/models.py`
+Open `backend/folders/models.py` and add this code:
+
+```python
+from django.db import models
+# Import the standard User model provided by Django's auth system
+from django.contrib.auth.models import User
+
+class Folder(models.Model):
+    # 1. Store the display name of the folder
+    name = models.CharField(max_length=255)
+    
+    # 2. Link this folder to a User record in the database
+    # If the user is deleted, automatically delete all their folders
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='folders')
+    
+    # 3. Create parent-child link (Adjacency List Pattern)
+    # 'self' allows a folder to point to another folder ID.
+    # null=True & blank=True allows a folder to be in the "Root" directory (no parent).
+    parent = models.ForeignKey(
+        'self', 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True, 
+        related_name='subfolders'
+    )
+    
+    # 4. Stamp when this folder was created
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # String representation: return folder name when printed in logs
+    def __str__(self):
+        return self.name
+```
+
+#### Why these parameters?
+* **`on_delete=models.CASCADE`**: Enforces referential integrity. If you delete a user, you don't want their folders orphaned in the database. `CASCADE` automatically deletes all subfolders and files belonging to that user.
+* **`related_name='subfolders'`**: Allows you to perform backwards lookup queries easily. For example, if you have a folder object `docs`, you can run `docs.subfolders.all()` to find all folders nested inside it.
+
+---
+
+### 2. Update `backend/files/models.py`
+Open `backend/files/models.py` and add this code:
+
+```python
+from django.db import models
+from django.contrib.auth.models import User
+# Import Folder from our folders app
+from folders.models import Folder
+
+class File(models.Model):
+    # 1. The visual display name of the file (e.g. "resume.pdf")
+    name = models.CharField(max_length=255)
+    
+    # 2. The physical file handler column.
+    # Under the hood, Django's FileField stores a string path pointing to S3.
+    file = models.FileField(upload_to='uploads/')
+    
+    # 3. Link file to the user who uploaded it
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='files')
+    
+    # 4. Link file to a parent folder
+    # null=True & blank=True allows a file to live in the root directory (outside any folder)
+    folder = models.ForeignKey(
+        Folder, 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True, 
+        related_name='files'
+    )
+    
+    # 5. Store file size in bytes
+    # BigIntegerField handles files larger than 2GB safely
+    size = models.BigIntegerField(null=True, blank=True)
+    
+    # 6. Stamp when this file was uploaded
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+```
+
+#### Why these parameters?
+* **`upload_to='uploads/'`**: Django prefix prepended to the S3 object key. When saving `resume.pdf`, it will be stored inside the S3 bucket under the path `uploads/resume.pdf`.
+* **`BigIntegerField`**: Standard integer fields (32-bit) can only store numbers up to 2.14 billion. Since file size is calculated in bytes, a 2.14GB file would cause integer overflow errors. `BigIntegerField` uses a 64-bit integer, safely accommodating file sizes up to 9.22 Exabytes.
+
+---
+
+### 3. Update `docs/05_Database.md`
+Let's add our concrete schema designs to our database guide so we have a clear map. We will append the following schema table designs.
+
+---
+
+## Database Internals: Python to PostgreSQL Conversion
+
+How Django maps model definitions to PostgreSQL column types:
+
+| Django Model Field | PostgreSQL Column Type | SQL Attributes |
+|---|---|---|
+| `CharField(max_length=255)` | `VARCHAR(255)` | Enforces character limit. |
+| `BigIntegerField()` | `BIGINT` | Stores 64-bit integers. |
+| `DateTimeField(auto_now_add=True)` | `TIMESTAMP WITH TIME ZONE` | Stamped automatically on row creation. |
+| `ForeignKey(User, on_delete=models.CASCADE)` | `BIGINT` | References `auth_user(id)` with a `FOREIGN KEY` constraint. |
+
+---
+
+## How to Debug
+
+### Common Pitfalls:
+* **Circular Imports**: If the `folders` app imports a model from `files` and the `files` app imports a model from `folders` using standard python imports, the compiler crashes: `ImportError: cannot import name...`.
+  * *How to solve*: Avoid circular imports by referencing model classes as strings in relations (e.g. `models.ForeignKey('folders.Folder', on_delete=models.CASCADE)`).
+* **Missing Related Name Conflicts**: If you define multiple foreign keys to the same model without setting unique `related_name` values, Django will fail validation checks because it cannot determine unique reverse relationship names.
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Write the model code inside `backend/folders/models.py` and `backend/files/models.py`.
+* Run `..\venv\Scripts\python.exe manage.py check` to confirm there are no database design configuration errors.
+
+---
+
+## Knowledge Check
+1. **Why do we use `models.BigIntegerField` instead of `models.IntegerField` for file sizes?**
+2. **What does `on_delete=models.CASCADE` do if a user deletes a parent folder containing 10 nested files?**
+3. **What database data type is generated in PostgreSQL for a Django `CharField(max_length=255)` field?**
+
+---
+
+## Next Step
+We will move to **Step 11: Run Migrations** (Milestone 2) to compile our models into SQL instructions and create the physical tables in PostgreSQL.
+
+---
+
+# Step 11: Run Migrations
+
+## Goal
+Generate database migration blueprint files for our local apps and apply all migrations (including Django's core authentication tables) to our PostgreSQL server.
+
+---
+
+## Why
+PostgreSQL tables do not magically update when you save Python files. The database needs explicit DDL (Data Definition Language) SQL instructions (such as `CREATE TABLE`, `ALTER TABLE`) to build tables and columns. Django uses a two-phase process called **Migrations** to keep the database schema in sync with your models:
+1. **`makemigrations`**: Inspects your Python models and compares them against your app's existing migrations. It writes a declarative, version-controlled Python blueprint file (e.g. `0001_initial.py`) describing what changed.
+2. **`migrate`**: Checks which blueprint files have not yet been applied, compiles them into PostgreSQL-specific SQL code, connects to the database, executes the SQL commands to create/modify tables, and logs completion.
+
+---
+
+## Commands
+
+```powershell
+# 1. Compile model blueprints into Python migration files
+..\venv\Scripts\python.exe manage.py makemigrations
+
+# 2. Connect to PostgreSQL and execute the migration blueprints
+..\venv\Scripts\python.exe manage.py migrate
+```
+
+### Explanations:
+* `makemigrations`: Compiles database version blueprints.
+* `migrate`: Connects to PostgreSQL, executes SQL DDL schemas, and logs success.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `backend/folders/migrations/0001_initial.py` | **[NEW]** | Python blueprint declaring how to build the `folders_folder` table in PostgreSQL. |
+| `backend/files/migrations/0001_initial.py` | **[NEW]** | Python blueprint declaring how to build the `files_file` table in PostgreSQL. |
+
+---
+
+## Folder Structure
+Our updated structure showing initial migrations generated inside local apps:
+
+```text
+DriveClone/
+├── backend/
+│   ├── files/
+│   │   └── migrations/
+│   │       ├── 0001_initial.py (New)
+│   │       └── ...
+│   ├── folders/
+│   │   └── migrations/
+│   │       ├── 0001_initial.py (New)
+│   │       └── ...
+│   └── ...
+└── ...
+```
+
+---
+
+## Code Explanation
+
+Let's dissect the generated file `backend/folders/migrations/0001_initial.py` to see what Django builds for us:
+
+```python
+# Generated by Django 4.2.x
+from django.conf import settings
+from django.db import migrations, models
+import django.db.models.deletion
+
+class Migration(migrations.Migration):
+
+    initial = True
+
+    dependencies = [
+        # Tells Django this migration depends on core Django User auth tables being built first
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+    ]
+
+    operations = [
+        # Action to create a table named folders_folder
+        migrations.CreateModel(
+            name='Folder',
+            fields=[
+                # Auto-incrementing BigInt Primary Key
+                ('id', models.BigAutoField(auto_now_add=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('name', models.CharField(max_length=255)),
+                ('created_at', models.DateTimeField(auto_now_add=True)),
+                # Self-referential parent link
+                ('parent', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='subfolders', to='folders.folder')),
+                # Link referencing the User table (auth_user)
+                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='folders', to=settings.AUTH_USER_MODEL)),
+            ],
+        ),
+    ]
+```
+
+* **`dependencies`**: Prevents database errors. Since `Folder` references a `User` (a foreign key relationship), the `User` table *must* exist before PostgreSQL can create the `Folder` table. Django ensures tables are created in the correct sequence.
+* **`operations`**: A list of structural changes. `migrations.CreateModel` compiles internally to:
+  ```sql
+  CREATE TABLE folders_folder (
+      id BIGSERIAL PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+      parent_id BIGINT REFERENCES folders_folder(id) ON DELETE CASCADE,
+      user_id BIGINT REFERENCES auth_user(id) ON DELETE CASCADE
+  );
+  ```
+
+---
+
+## Request Lifecycle / Internals
+
+What happens behind the scenes when you run `python manage.py migrate`:
+
+```text
+  [ Terminal Command: python manage.py migrate ]
+                         │
+                         ▼
+  [ Reads database table: django_migrations ]
+         ├── Checks which migration files are marked as applied
+         ▼
+  [ Scans migration folders for unapplied files ]
+         ├── Finds auth initial migrations (Django core tables)
+         ├── Finds authtoken initial migrations (DRF token tables)
+         ├── Finds folders initial migrations (folders app tables)
+         └── Finds files initial migrations (files app tables)
+                         │
+                         ▼
+  [ Connects via psycopg2: Opens PostgreSQL Transaction ]
+         ├── 1. Translates Python instructions to PostgreSQL dialect SQL
+         ├── 2. Executes SQL statements sequentially
+         ├── 3. Creates SQL Tables and constraints
+         ├── 4. INSERTS rows into django_migrations (logging completion)
+         ▼
+  [ Transaction committed successfully! SQL Tables ready for queries. ]
+```
+
+---
+
+## How to Debug
+
+### Common Pitfalls:
+* **"FATAL: database does not exist"**:
+  * *Fix*: Ensure you created the PostgreSQL database named `driveclone` as described in Step 7.
+* **Locked Database / Column Mismatches**: If you edit models after running migrations, do not write modifications manually in pgAdmin. If your Python code disagrees with PostgreSQL's actual schemas, Django will crash with `ProgrammingError: column X of relation Y does not exist`. Always use `makemigrations` and `migrate` to modify schemas.
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Run the migration commands:
+  ```powershell
+  ..\venv\Scripts\python.exe manage.py makemigrations
+  ..\venv\Scripts\python.exe manage.py migrate
+  ```
+* **Task 2**: Connect to PostgreSQL using pgAdmin. Expand databases -> driveclone -> Schemas -> public -> Tables.
+* Count how many tables are present. Note that Django created its core system tables (`auth_user`, `django_session`, `django_migrations`) alongside our application tables (`folders_folder`, `files_file`, `authtoken_token`).
+
+---
+
+## Knowledge Check
+1. **What is the difference between `makemigrations` and `migrate`?**
+2. **What database table is created by Django to track which migration files have been applied?**
+3. **Why does `folders/migrations/0001_initial.py` declare a dependency on `auth` migrations?**
+
+---
+
+## Next Step
+We will move to **Step 12: Authentication** (Milestone 3) to implement our secure registration and login endpoints.
+
+
+
+
+
+
 
 
 

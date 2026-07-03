@@ -25,11 +25,11 @@ Track your progress by changing `[ ]` to `[x]` as you complete each step.
 ---
 
 ## Milestone 2: Database Setup & Configuration
-- [ ] **Step 7**: Configure PostgreSQL
-- [ ] **Step 8**: Install Django REST Framework (DRF)
-- [ ] **Step 9**: Configure `settings.py`
-- [ ] **Step 10**: Create Models
-- [ ] **Step 11**: Run Migrations
+- [x] **Step 7**: Configure PostgreSQL
+- [x] **Step 8**: Install Django REST Framework (DRF)
+- [x] **Step 9**: Configure `settings.py`
+- [x] **Step 10**: Create Models
+- [x] **Step 11**: Run Migrations
 
 ---
 

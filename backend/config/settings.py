@@ -37,9 +37,20 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    
+    # Third-Party Libraries
+    'rest_framework',
+    'rest_framework.authtoken',
+    'corsheaders',
+    
+    # Local Apps
+    'users.apps.UsersConfig',
+    'folders.apps.FoldersConfig',
+    'files.apps.FilesConfig',
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',          # CORS headers intercept filter (MUST be at the top)
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -75,8 +86,18 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        # ENGINE tells Django to use the PostgreSQL backend compiler
+        'ENGINE': 'django.db.backends.postgresql',
+        # NAME is the database catalog inside PostgreSQL
+        'NAME': 'driveclone',
+        # USER is the PostgreSQL database owner role
+        'USER': 'postgres',
+        # PASSWORD is the password you set during PostgreSQL installation
+        'PASSWORD': 'sid@9608',
+        # HOST is localhost since PG is running on the same machine
+        'HOST': '127.0.0.1',
+        # PORT is the default port PostgreSQL listens on
+        'PORT': '5432',
     }
 }
 
@@ -121,3 +142,17 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# CORS Configuration: Tell Django which external client origins are allowed to connect
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",       # React development server (default host)
+    "http://127.0.0.1:3000",       # Alternate localhost IP
+]
+
+# Django REST Framework Settings
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        # Configure DRF to use token authentication by default for all API endpoints
+        'rest_framework.authentication.TokenAuthentication',
+    ],
+}
