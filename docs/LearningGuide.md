@@ -3389,6 +3389,189 @@ In Tailwind v4, `@import "tailwindcss";` replaces the three `@tailwind` directiv
 ## Next Step
 We will move to **Step 21: AuthContext** (Milestone 6) to build our global state manager tracking user credentials and HTTP tokens.
 
+---
+
+# Step 21: Create AuthContext & API Client
+
+## Goal
+Implement a global state context provider (`AuthContext`) to track authenticated user states, manage login/logout/registration actions, persist credentials in the browser's local storage, and create an Axios client wrapper that automatically signs outgoing requests with user tokens.
+
+---
+
+## Why
+
+### 1. The React Prop Drilling Problem
+If we save user authentication states directly inside `App.jsx`, we would have to manually pass the user object and logout functions down as properties through every nested UI layer (Navbar, Sidebar, Dashboard, FileCards, etc.). This is called **Prop Drilling**.
+React's **Context API** solves this by creating a global virtual state container. Any child component in the application can hook directly into this container and read or update authentication states without going through parent nodes.
+
+### 2. Auto-Signing via Axios Interceptors
+Instead of manually appending `headers: { Authorization: 'Token ...' }` to every single backend HTTP fetch (uploading, creating folders, list files, deleting), we write an **Axios interceptor**. The interceptor intercepts every outgoing HTTP request, checks if a token is saved in the browser's storage, and automatically injects the token into the headers.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `frontend/src/utils/api.js` | **[NEW]** | Configured Axios HTTP wrapper containing root URLs and automated token request interceptors. |
+| `frontend/src/context/AuthContext.jsx` | **[NEW]** | Context state provider containing registration, login, and token caching logic. |
+
+---
+
+## Folder Structure
+Our updated structure showing the context and utilities components:
+
+```text
+frontend/src/
+├── context/
+│   └── AuthContext.jsx (New)
+├── utils/
+│   └── api.js (New)
+├── App.css
+├── App.jsx
+├── index.css
+├── main.jsx
+└── ...
+```
+
+---
+
+## Code Explanation
+
+We will build the authentication state engine across 2 files:
+
+### 1. Create `frontend/src/utils/api.js`
+This file configures our HTTP client to connect to our local Django REST framework APIs:
+
+```javascript
+import axios from 'axios';
+
+// 1. Instantiate Axios with our local Django base route
+const api = axios.create({
+  baseURL: 'http://127.0.0.1:8000/api',
+});
+
+// 2. Register a request interceptor to auto-inject token keys
+api.interceptors.request.use(
+  (config) => {
+    // Read the token key from the browser's local storage
+    const token = localStorage.getItem('token');
+    if (token) {
+      // If a token exists, attach the header using Django's expected format
+      config.headers.Authorization = `Token ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+export default api;
+```
+
+* **`axios.create`**: Generates an isolated instance of Axios.
+* **`api.interceptors.request.use`**: Intercepts requests *before* they are sent to the network. This is a standard security pattern to manage authentication headers centrally.
+
+---
+
+### 2. Create `frontend/src/context/AuthContext.jsx`
+This file manages global authentication states and methods (register, login, logout) for all pages:
+
+```javascript
+import React, { createContext, useState, useEffect } from 'react';
+import api from '../utils/api';
+
+// Create Context reference
+export const AuthContext = createContext();
+
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  // 1. Initial hydration: Check local storage on initial mount
+  useEffect(() => {
+    const savedToken = localStorage.getItem('token');
+    const savedUser = localStorage.getItem('user');
+
+    if (savedToken && savedUser) {
+      setToken(savedToken);
+      setUser(JSON.parse(savedUser));
+    }
+    setLoading(false);
+  }, []);
+
+  // 2. Perform Login action
+  const login = async (username, password) => {
+    const response = await api.post('/auth/login/', { username, password });
+    const { token: tokenKey, user: userData } = response.data;
+
+    // Cache credentials in local storage
+    localStorage.setItem('token', tokenKey);
+    localStorage.setItem('user', JSON.stringify(userData));
+
+    setToken(tokenKey);
+    setUser(userData);
+    return userData;
+  };
+
+  // 3. Perform Registration action
+  const register = async (username, email, password) => {
+    const response = await api.post('/auth/register/', { username, email, password });
+    const { token: tokenKey, user: userData } = response.data;
+
+    // Cache credentials in local storage
+    localStorage.setItem('token', tokenKey);
+    localStorage.setItem('user', JSON.stringify(userData));
+
+    setToken(tokenKey);
+    setUser(userData);
+    return userData;
+  };
+
+  // 4. Perform Logout action
+  const logout = () => {
+    // Clear browser local storage cache
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    
+    // Clear react virtual states
+    setToken(null);
+    setUser(null);
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, token, loading, login, register, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+```
+
+* **`const savedToken = localStorage.getItem('token')`**: Implements **State Hydration**. Caching credentials in local storage prevents the browser from logging the user out on a page reload.
+* **`loading` state**: Prevents the UI from flashing a "login page" momentarily on refresh. While React checks local storage, `loading` is true, indicating components should display a loading spinner instead of rendering forms.
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Create `frontend/src/utils/api.js`.
+* **Task 2**: Create `frontend/src/context/AuthContext.jsx`.
+* Run `npm run build` inside the frontend folder to make sure there are no syntax or compiler errors in the new files.
+
+---
+
+## Knowledge Check
+1. **What is "Prop Drilling", and how does React's Context API prevent it?**
+2. **Why do we use an Axios Request Interceptor instead of manually passing headers in every request?**
+3. **What is the purpose of the `loading` state inside `AuthProvider`?**
+
+---
+
+## Next Step
+We will move to **Step 22: Layout & Router** (Milestone 6) to build our routing paths and private route guards.
+
+
 
 
 

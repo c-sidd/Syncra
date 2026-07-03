@@ -55,7 +55,7 @@ Track your progress by changing `[ ]` to `[x]` as you complete each step.
 
 ## Milestone 6: Frontend Foundation
 - [x] **Step 20**: Frontend Setup (Vite, React Router, Tailwind, Axios)
-- [ ] **Step 21**: Create AuthContext
+- [x] **Step 21**: Create AuthContext
 - [ ] **Step 22**: Build Layout & Routing Tree
 
 ---
