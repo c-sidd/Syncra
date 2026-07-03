@@ -1,0 +1,26 @@
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# IDE configuration folders
+.vscode/
+.idea/
+
+# Environment configurations containing passwords and credentials
+.env
+*.env.local
+
+# Frontend packages and build targets
+node_modules/
+dist/
+build/
