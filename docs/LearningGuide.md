@@ -3571,6 +3571,400 @@ export const AuthProvider = ({ children }) => {
 ## Next Step
 We will move to **Step 22: Layout & Router** (Milestone 6) to build our routing paths and private route guards.
 
+---
+
+# Step 22: Build Layout & Routing Tree
+
+## Goal
+Build a client-side layout shell including a global navbar, set up page routes (guarded `/` Dashboard and public `/login` Auth forms), and implement a React private router guard to redirect unauthenticated visitors automatically.
+
+---
+
+## Why
+
+### 1. Client-Side Routing (SPA Mechanics)
+In traditional multi-page websites, clicking a link forces the browser to request a new HTML document from the server, causing a blank flash.
+In a **Single Page Application (SPA)**, React loads *one* HTML skeleton (`index.html`) on start. **`react-router-dom`** acts as a virtual routing manager. When the URL changes, it intercepts the link click and dynamically mounts or unmounts the corresponding view component (e.g. swap `Login` for `Dashboard`) completely within JavaScript.
+
+### 2. Router Guarding (PrivateRoute Pattern)
+We must never let unauthenticated users see our file dashboard. We implement a **PrivateRoute** layout wrapper. This wrapper checks the global `AuthContext` status:
+* If the user is logged in, it passes the request and displays the dashboard child component.
+* If the user is not logged in, it redirects them to `/login` using `<Navigate to="/login" replace />`, blocking access.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `frontend/src/components/PrivateRoute.jsx` | **[NEW]** | Router layout guard checking auth states and showing loading spinners. |
+| `frontend/src/components/Navbar.jsx` | **[NEW]** | Displays user profiles and handles logouts. |
+| `frontend/src/pages/Login.jsx` | **[NEW]** | Layout containing form models for login/registration and displaying validation errors. |
+| `frontend/src/pages/Dashboard.jsx` | **[NEW]** | Clean dashboard shell showing layout margins. |
+| `frontend/src/App.jsx` | **[MODIFY]** | Root entry point containing context wrappers and router routes. |
+
+---
+
+## Folder Structure
+Our updated structure showing the layouts and pages components:
+
+```text
+frontend/src/
+├── components/
+│   ├── Navbar.jsx (New)
+│   └── PrivateRoute.jsx (New)
+├── context/
+│   └── AuthContext.jsx
+├── pages/
+│   ├── Dashboard.jsx (New)
+│   └── Login.jsx (New)
+├── utils/
+│   └── api.js
+├── App.css
+├── App.jsx (Modified)
+├── index.css
+└── main.jsx
+```
+
+---
+
+## Code Explanation
+
+We will build the page layouts and routing trees across 5 components:
+
+### 1. Create `frontend/src/components/PrivateRoute.jsx`
+This component blocks access to private pages while credentials are being loaded:
+
+```javascript
+import React, { useContext } from 'react';
+import { Navigate } from 'react-router-dom';
+import { AuthContext } from '../context/AuthContext';
+
+const PrivateRoute = ({ children }) => {
+  const { user, loading } = useContext(AuthContext);
+
+  // 1. If checking local storage, return a modern loading spinner
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-950 text-white font-sans">
+        <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-purple-500"></div>
+      </div>
+    );
+  }
+
+  // 2. If no user is authenticated, redirect to the login form
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  // 3. Otherwise, render the requested child component
+  return children;
+};
+
+export default PrivateRoute;
+```
+
+---
+
+### 2. Create `frontend/src/components/Navbar.jsx`
+A clean navigation bar displaying the authenticated user's profile and a logout button:
+
+```javascript
+import React, { useContext } from 'react';
+import { AuthContext } from '../context/AuthContext';
+
+const Navbar = () => {
+  const { user, logout } = useContext(AuthContext);
+
+  // Hide the navbar on public pages (like the Login page)
+  if (!user) return null;
+
+  return (
+    <nav className="sticky top-0 z-50 flex items-center justify-between px-6 py-4 bg-gray-950/80 backdrop-blur-md border-b border-gray-800 text-white font-sans">
+      <div className="flex items-center gap-2">
+        <svg className="w-8 h-8 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path>
+        </svg>
+        <span className="text-xl font-bold tracking-tight bg-gradient-to-r from-purple-400 to-indigo-400 bg-clip-text text-transparent">
+          DriveClone
+        </span>
+      </div>
+
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-purple-500/20 border border-purple-500/50 flex items-center justify-center font-semibold text-purple-300">
+            {user.username.charAt(0).toUpperCase()}
+          </div>
+          <span className="text-sm font-medium text-gray-300">@{user.username}</span>
+        </div>
+        <button
+          onClick={logout}
+          className="px-3.5 py-1.5 text-xs font-semibold tracking-wide text-gray-300 hover:text-white bg-gray-900 hover:bg-gray-800 border border-gray-800 hover:border-gray-700 rounded-lg transition-all duration-200 cursor-pointer"
+        >
+          Logout
+        </button>
+      </div>
+    </nav>
+  );
+};
+
+export default Navbar;
+```
+
+---
+
+### 3. Create `frontend/src/pages/Login.jsx`
+A responsive authentication card that handles both login and registration:
+
+```javascript
+import React, { useState, useContext } from 'react';
+import { useNavigate, Navigate } from 'react-router-dom';
+import { AuthContext } from '../context/AuthContext';
+
+const Login = () => {
+  const { user, login, register } = useContext(AuthContext);
+  const navigate = useNavigate();
+
+  const [isRegister, setIsRegister] = useState(false);
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  // If already authenticated, redirect to Dashboard
+  if (user) {
+    return <Navigate to="/" replace />;
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    try {
+      if (isRegister) {
+        await register(username, email, password);
+      } else {
+        await login(username, password);
+      }
+      navigate('/', { replace: true });
+    } catch (err) {
+      if (err.response && err.response.data) {
+        const data = err.response.data;
+        if (data.non_field_errors) {
+          setError(data.non_field_errors[0]);
+        } else {
+          const firstKey = Object.keys(data)[0];
+          setError(`${firstKey}: ${data[firstKey][0]}`);
+        }
+      } else {
+        setError('Connection failed. Please check if the Django server is online.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-950 px-4 font-sans text-white">
+      <div className="w-full max-w-md p-8 bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl shadow-xl flex flex-col gap-6">
+        <div className="flex flex-col items-center gap-2">
+          <div className="w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path>
+            </svg>
+          </div>
+          <h2 className="text-2xl font-bold tracking-tight">
+            {isRegister ? 'Create an Account' : 'Welcome Back'}
+          </h2>
+          <p className="text-sm text-gray-400 text-center">
+            {isRegister ? 'Sign up to start managing cloud files' : 'Enter credentials to access your drive'}
+          </p>
+        </div>
+
+        {error && (
+          <div className="px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400 text-center animate-shake">
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">Username</label>
+            <input
+              type="text"
+              required
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg focus:outline-none focus:border-purple-500 text-sm transition-all duration-200"
+              placeholder="Enter username"
+            />
+          </div>
+
+          {isRegister && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">Email Address</label>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg focus:outline-none focus:border-purple-500 text-sm transition-all duration-200"
+                placeholder="Enter email address"
+              />
+            </div>
+          )}
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">Password</label>
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg focus:outline-none focus:border-purple-500 text-sm transition-all duration-200"
+              placeholder="Enter password"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full mt-2 py-3 bg-purple-600 hover:bg-purple-500 disabled:bg-purple-800 text-sm font-semibold tracking-wide rounded-lg transition-all duration-200 cursor-pointer shadow-lg shadow-purple-500/10"
+          >
+            {loading ? 'Processing...' : isRegister ? 'Sign Up' : 'Log In'}
+          </button>
+        </form>
+
+        <div className="border-t border-gray-800 pt-4 text-center">
+          <button
+            onClick={() => {
+              setIsRegister(!isRegister);
+              setError(null);
+            }}
+            className="text-xs font-medium text-purple-400 hover:text-purple-300 transition-colors duration-200 cursor-pointer"
+          >
+            {isRegister ? 'Already have an account? Log in' : "Don't have an account? Sign up"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Login;
+```
+
+---
+
+### 4. Create `frontend/src/pages/Dashboard.jsx`
+A clean structure for our dashboard placeholder view:
+
+```javascript
+import React from 'react';
+
+const Dashboard = () => {
+  return (
+    <div className="min-h-screen bg-gray-950 text-white font-sans p-8">
+      <div className="max-w-6xl mx-auto flex flex-col gap-8">
+        <div className="flex items-center justify-between border-b border-gray-800 pb-4">
+          <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
+            My Drive
+          </h1>
+          <div className="text-sm text-gray-400">
+            Authenticated shell active
+          </div>
+        </div>
+
+        <div className="py-20 flex flex-col items-center justify-center border-2 border-dashed border-gray-800 rounded-2xl bg-gray-900/10">
+          <div className="w-12 h-12 rounded-full bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 mb-4 animate-pulse">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+            </svg>
+          </div>
+          <p className="text-sm font-semibold tracking-wide text-gray-300">
+            Welcome to your Cloud Drive Clone!
+          </p>
+          <p className="text-xs text-gray-500 mt-1">
+            Dashboard loaded. Folder and file API integrations are up next.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Dashboard;
+```
+
+---
+
+### 5. Update `frontend/src/App.jsx`
+Finally, connect everything inside our root React file:
+
+```javascript
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider } from './context/AuthContext';
+import PrivateRoute from './components/PrivateRoute';
+import Navbar from './components/Navbar';
+import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
+
+function App() {
+  return (
+    <AuthProvider>
+      <Router>
+        <div className="min-h-screen bg-gray-950 flex flex-col selection:bg-purple-500 selection:text-white">
+          <Navbar />
+          <Routes>
+            {/* Public auth page */}
+            <Route path="/login" element={<Login />} />
+            
+            {/* Private guarded dashboard path */}
+            <Route
+              path="/"
+              element={
+                <PrivateRoute>
+                  <Dashboard />
+                </PrivateRoute>
+              }
+            />
+            
+            {/* Catch-all redirect to dashboard */}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </div>
+      </Router>
+    </AuthProvider>
+  );
+}
+
+export default App;
+```
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Create `PrivateRoute.jsx` and `Navbar.jsx` in `components/`.
+* **Task 2**: Create `Login.jsx` and `Dashboard.jsx` in `pages/`.
+* **Task 3**: Update `App.jsx`.
+* Run `npm run build` inside the frontend directory to verify that Rollup bundles the files without import conflicts.
+
+---
+
+## Knowledge Check
+1. **What is the difference between client-side routing in SPAs and server-side routing in traditional websites?**
+2. **How does `<Navigate to="/login" replace />` prevent visitors from accessing guarded paths?**
+3. **Why does the `Navbar` component return `null` if the user is not authenticated?**
+
+---
+
+## Next Step
+We will move to **Milestone 7: Frontend Integration** (Step 23) to build our active User login form integrations.
+
+
 
 
 
