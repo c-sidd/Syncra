@@ -23,4 +23,6 @@ urlpatterns = [
     path('api/auth/', include('users.urls')),
     # Map all API folder requests to folders app routing
     path('api/folders/', include('folders.urls')),
+    # Map all API file requests to files app routing
+    path('api/files/', include('files.urls')),
 ]

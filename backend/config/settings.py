@@ -10,10 +10,18 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import os
+import environ
 from pathlib import Path
+
+# Initialize environ database
+env = environ.Env()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Read variables from .env file into os.environ
+environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
 
 # Quick-start development settings - unsuitable for production
@@ -93,7 +101,8 @@ DATABASES = {
         # USER is the PostgreSQL database owner role
         'USER': 'postgres',
         # PASSWORD is the password you set during PostgreSQL installation
-        'PASSWORD': 'sid@9608',
+        # Read DB_PASSWORD from .env. Default to 'sid@9608' if not set
+        'PASSWORD': env('DB_PASSWORD', default='sid@9608'),
         # HOST is localhost since PG is running on the same machine
         'HOST': '127.0.0.1',
         # PORT is the default port PostgreSQL listens on
@@ -155,4 +164,28 @@ REST_FRAMEWORK = {
         # Configure DRF to use token authentication by default for all API endpoints
         'rest_framework.authentication.TokenAuthentication',
     ],
+}
+
+# AWS S3 Storage Settings
+AWS_ACCESS_KEY_ID = env('AWS_ACCESS_KEY_ID', default=None)
+AWS_SECRET_ACCESS_KEY = env('AWS_SECRET_ACCESS_KEY', default=None)
+AWS_STORAGE_BUCKET_NAME = env('AWS_STORAGE_BUCKET_NAME', default=None)
+AWS_S3_REGION_NAME = env('AWS_S3_REGION_NAME', default='us-east-1')
+
+# S3 Security Configurations
+# 1. Block S3 from generating public read urls (keeps files private)
+AWS_DEFAULT_ACL = None
+# 2. Force S3 to use modern Signature Version 4 cryptography for presigning
+AWS_S3_SIGNATURE_VERSION = 's3v4'
+# 3. Prevent django-storages from exposing bucket query parameters in URLs
+AWS_QUERYSTRING_AUTH = True
+
+# Overwrite Django's default storage backend to use S3 for file uploads
+STORAGES = {
+    "default": {
+        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
 }

@@ -44,12 +44,12 @@ Track your progress by changing `[ ]` to `[x]` as you complete each step.
 ---
 
 ## Milestone 5: AWS S3 Integration & File APIs
-- [ ] **Step 14**: Implement file upload parser
-- [ ] **Step 15**: Connect AWS S3 storage configuration
-- [ ] **Step 16**: Implement List Files API (signed URLs)
-- [ ] **Step 17**: Implement Download API
-- [ ] **Step 18**: Implement Delete API
-- [ ] **Step 19**: End-to-End API Testing and Debugging
+- [x] **Step 14**: Implement file upload parser
+- [x] **Step 15**: Connect AWS S3 storage configuration
+- [x] **Step 16**: Implement List Files API (signed URLs)
+- [x] **Step 17**: Implement Download API
+- [x] **Step 18**: Implement Delete API
+- [x] **Step 19**: End-to-End API Testing and Debugging
 
 ---
 

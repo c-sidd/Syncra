@@ -2359,6 +2359,945 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/folders/" -Method Get -Headers
 ## Next Step
 We will move to **Step 14: Upload APIs** (Milestone 5) to implement file upload parsing and metadata validation rules.
 
+---
+
+# Step 14: File Upload Parsing
+
+## Goal
+Implement a file serializer and basic multipart API views to capture files and validate metadata before forwarding them to our storage backend.
+
+---
+
+## Why
+
+### How Files Move Over HTTP (`multipart/form-data`)
+When a user uploads a file, the browser does not send standard JSON. Instead, it sends an HTTP request using **`multipart/form-data`** encoding. 
+* **JSON Limit**: JSON payloads are strings loaded entirely in memory. Trying to load a 500MB video into a single JSON string would cause the browser or backend to run out of RAM and crash.
+* **Multipart Boundaries**: The browser divides the request body into segments separated by a unique random string called a **boundary**. Each segment contains its own header (e.g. `Content-Disposition: form-data; name="file"; filename="resume.pdf"`) followed by the raw binary bytes of that chunk.
+
+### Django's Dynamic Upload Handlers
+Django REST Framework intercepts these segments. To prevent RAM depletion, it uses dynamic handlers:
+1. **`InMemoryUploadedFile`**: If the file is smaller than 2.5MB, Django holds it in memory for fast access.
+2. **`TemporaryUploadedFile`**: If the file is larger than 2.5MB, Django streams the bytes to your server's temporary storage folder.
+
+We must define serializers that validate these metadata properties and views configured with **`MultiPartParser`** to decode binary segments.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `backend/files/serializers.py` | **[NEW]** | Handles validation of parent folder ownership for file uploads. |
+| `backend/files/views.py` | **[MODIFY]** | View configured with DRF multipart parsers to extract file bytes and folder keys. |
+| `backend/files/urls.py` | **[NEW]** | Local routing maps for files endpoints. |
+| `backend/config/urls.py` | **[MODIFY]** | Linked files app URLs under `/api/files/`. |
+
+---
+
+## Folder Structure
+Our updated structure showing the files sub-app components:
+
+```text
+DriveClone/
+├── backend/
+│   ├── config/
+│   │   ├── urls.py (Modified)
+│   │   └── ...
+│   ├── files/
+│   │   ├── migrations/
+│   │   ├── __init__.py
+│   │   ├── admin.py
+│   │   ├── apps.py
+│   │   ├── models.py
+│   │   ├── serializers.py (New)
+│   │   ├── tests.py
+│   │   ├── urls.py (New)
+│   │   └── views.py (Modified)
+│   └── ...
+└── ...
+```
+
+---
+
+## Code Explanation
+
+We will build the upload parsing flow across 4 steps: Serializers, Views, Local URL maps, and Project URL maps.
+
+### 1. Create `backend/files/serializers.py`
+This class handles validation of inputs (name, parent folder ownership, and size constraints) for the File model.
+
+```python
+from rest_framework import serializers
+from .models import File
+from folders.models import Folder
+
+class FileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = File
+        fields = ('id', 'name', 'file', 'size', 'uploaded_at', 'folder')
+        read_only_fields = ('name', 'size', 'uploaded_at')
+
+    # Enforce that the user owns the parent folder where they are uploading this file
+    def __init__(self, *args, **kwargs):
+        super(FileSerializer, self).__init__(*args, **kwargs)
+        request = self.context.get('request')
+        if request and request.user:
+            # Filter the parent folder choices to only folders owned by this user
+            self.fields['folder'].queryset = Folder.objects.filter(user=request.user)
+```
+
+---
+
+### 2. Update `backend/files/views.py`
+We configure `FileUploadView` to accept binary multipart payloads using `MultiPartParser` and `FormParser`:
+
+```python
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+# Import parsers required to parse multipart/form-data uploads
+from rest_framework.parsers import MultiPartParser, FormParser
+from .serializers import FileSerializer
+
+class FileUploadView(APIView):
+    permission_classes = [IsAuthenticated]
+    # Configure the view to parse form-data and binary file streams
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request):
+        # 1. Bind request data and files to serializer
+        serializer = FileSerializer(data=request.data, context={'request': request})
+        
+        if serializer.is_valid():
+            # 2. Extract raw file object from request streams
+            file_obj = request.FILES.get('file')
+            if not file_obj:
+                return Response({"file": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
+                
+            # 3. Retrieve size of file in bytes and original name
+            file_size = file_obj.size
+            file_name = file_obj.name
+            
+            # 4. Save metadata row. Django will run S3 upload in the background (once configured in Step 15)
+            serializer.save(
+                user=request.user,
+                name=file_name,
+                size=file_size
+            )
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+```
+
+* **`parser_classes = (MultiPartParser, FormParser)`**: Directs DRF's parsing engine to parse the incoming request body according to standard boundary limits instead of attempting to decode it as raw JSON.
+* **`request.FILES.get('file')`**: Retrieves the parsed file stream object from Django's uploads registry.
+
+---
+
+### 3. Create `backend/files/urls.py`
+This maps url paths inside our files sub-app:
+
+```python
+from django.urls import path
+from .views import FileUploadView
+
+urlpatterns = [
+    # Map POST /api/files/upload/ to FileUploadView
+    path('upload/', FileUploadView.as_view(), name='file-upload'),
+]
+```
+
+---
+
+### 4. Update `backend/config/urls.py`
+Connect files app URL patterns to the main project route path:
+
+```python
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('api/auth/', include('users.urls')),
+    path('api/folders/', include('folders.urls')),
+    # Map all URLs starting with api/files/ to the files app router
+    path('api/files/', include('files.urls')),
+]
+```
+
+---
+
+## Request Lifecycle / Internals
+
+How Django parses binary multipart payloads:
+
+```text
+  [ Client Browser (POST /api/files/upload/ with file) ]
+                         │
+                         ▼
+  [ Django WSGI Server ]
+         ├── Reads HTTP headers. Finds Content-Type: multipart/form-data; boundary=----xyz
+         ├── Receives socket byte chunks.
+         ▼
+  [ MultiPartParser / Upload Handler ]
+         ├── Streams bytes dynamically.
+         ├── If file < 2.5MB -> holds in RAM as InMemoryUploadedFile.
+         ├── If file > 2.5MB -> streams to server local disk as TemporaryUploadedFile.
+         ├── Populates request.data (form parameters) and request.FILES (file object).
+         ▼
+  [ FileUploadView.post(request) ]
+         ├── 1. Reads metadata from serializer validations.
+         ├── 2. Grabs size and name from request.FILES['file'] object.
+         ├── 3. Calls serializer.save(size=size, name=name).
+         ▼
+  [ Django Storage Engine ]
+         └── 4. Writes file contents to S3 (once settings are linked in Step 15).
+```
+
+---
+
+## How to Debug
+
+### Common Pitfalls:
+* **Empty `request.FILES`**: If your frontend calls the endpoint but Django returns `"file: This field is required"`, check that the client Axios request sets `Content-Type: multipart/form-data` and binds the payload inside a `FormData` object with the field key named `"file"`.
+* **Out of Memory crash**: If you read file data using `file_obj.read()` inside your view logic, Python loads the *entire* file bytes into RAM. For large files (e.g. 500MB), this can consume server memory and crash. Always use Django's default upload stream tools without calling `.read()` directly.
+
+---
+
+## Try It Yourself / Exercises
+* **Task**: Implement the serializer, view, local URLs, and root URL configurations. Run `python manage.py check` to make sure there are no typos. 
+*(Note: Do not run upload test scripts yet. In this step, Django uses its default storage engine, attempting to write files locally. In the next step, we will configure AWS S3 storage, ensuring files upload to the cloud).*
+
+---
+
+## Knowledge Check
+1. **Why must we use `multipart/form-data` instead of JSON for uploading files?**
+2. **What does the `MultiPartParser` do when added to `parser_classes`?**
+3. **What is the difference between `InMemoryUploadedFile` and `TemporaryUploadedFile` inside Django?**
+
+---
+
+## Next Step
+We will move to **Step 15: AWS S3 Integration** (Milestone 5) to configure `django-storages` and `boto3` to stream files to S3.
+
+---
+
+# Step 15: AWS S3 Integration
+
+## Goal
+Install AWS integration libraries (`boto3`, `django-storages`, and `django-environ`), configure S3 bucket connection variables inside a local `.env` file, and update `settings.py` to route all user file uploads directly to AWS cloud storage.
+
+---
+
+## Why
+
+### Design Decision: Local Server Disk vs. Cloud Object Storage (S3)
+* **Local Server Disk**: Easiest to setup. Files are stored on the server's hard drive. However, if you scale horizontally (spin up more servers), Server A cannot access files uploaded to Server B. Furthermore, server restarts in cloud environments (like Heroku or AWS EC2 instances inside autoscaling groups) often wipe out local disk modifications, deleting user files.
+* **AWS S3 Object Storage (Chosen)**: Centralized cloud file vault. Regardless of how many backend servers are spun up or destroyed, they all read and write from the same S3 bucket, ensuring data persistence and horizontal scaling.
+
+### seamless ORM Mapping
+Instead of writing manual AWS S3 API code to push files in our view handlers, we use **`django-storages`**. This library plugs into Django's default file system API. When we define a model using `FileField` and click `serializer.save()`, Django automatically handles transferring the file stream to AWS S3 behind the scenes, keeping our code clean and framework-agnostic.
+
+---
+
+## Package Breakdown
+
+### 1. `boto3`
+* **Purpose**: The official AWS Software Development Kit (SDK) for Python.
+* **Without it**: Python cannot authenticate or send payload operations to any AWS service APIs.
+* **When it runs / Where used**: Used by the storage engine to open connections and sign request tokens.
+
+### 2. `django-storages`
+* **Purpose**: A collection of custom storage backends for Django. We use its `S3Boto3Storage` backend class.
+* **Without it**: Django defaults to writing files to local disk folders. We would have to write custom S3 upload views.
+* **When it runs / Where used**: Intercepts `FileField` save actions and maps them to S3 calls.
+
+### 3. `django-environ`
+* **Purpose**: Reads variables from a local `.env` file and loads them into Python's `os.environ` environment database.
+* **Without it**: We would have to hardcode passwords and S3 keys inside `settings.py`, risking secret leakage if committed to Git.
+* **When it runs / Where used**: Executed at the very top of `settings.py` during server initialization.
+
+---
+
+## Commands
+
+```powershell
+# Install S3 integration libraries and environment variable loaders
+.\venv\Scripts\pip.exe install boto3 django-storages django-environ
+```
+
+### Explanations:
+* `pip.exe install`: Downloads packages from PyPI.
+* `boto3 django-storages django-environ`: The libraries to fetch.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `docs/06_AWS-S3.md` | **[NEW]** | Conceptual guide file detailing buckets, objects, flat folder structures, and download signature lifetimes. |
+| `backend/.env` | **[NEW]** | Configuration secrets file holding S3 keys and regions. (Ignored by Git). |
+| `backend/config/settings.py` | **[MODIFY]** | Configured environment loaders, registered `storages` and set AWS variables redirecting the default storage engine. |
+
+---
+
+## Folder Structure
+Our updated structure showing the environment variables config file:
+
+```text
+DriveClone/
+├── backend/
+│   ├── .env (New - Hidden secrets file)
+│   ├── config/
+│   │   ├── settings.py (Modified)
+│   │   └── ...
+│   └── ...
+└── docs/
+    ├── 06_AWS-S3.md (New)
+    └── ...
+```
+
+---
+
+## Code Explanation
+
+We must configure our secrets file and load them inside our settings.
+
+### 1. Create `backend/.env`
+Create a text file named `.env` directly in the `backend/` directory. **Ensure this file is NEVER committed to Git** (our `.gitignore` already ignores `*.env` files).
+
+```text
+# Local PostgreSQL Credentials
+DB_PASSWORD=sid@9608
+
+# AWS S3 Cloud Storage Credentials
+AWS_ACCESS_KEY_ID=your-aws-access-key-id
+AWS_SECRET_ACCESS_KEY=your-aws-secret-access-key
+AWS_STORAGE_BUCKET_NAME=your-s3-bucket-name
+AWS_S3_REGION_NAME=your-s3-bucket-region-name
+```
+*(You will populate these with actual credentials during AWS integration setup).*
+
+---
+
+### 2. Update `backend/config/settings.py`
+We will modify the top and bottom of `settings.py`.
+
+#### A. Load `.env` at the Top of Settings
+Open `backend/config/settings.py`. Add the `environ` imports directly under the `pathlib` imports:
+
+```python
+import os
+import environ
+from pathlib import Path
+
+# Initialize environ database
+env = environ.Env()
+# Build paths inside the project like this: BASE_DIR / 'subdir'.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Read variables from .env file into os.environ
+environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+```
+
+#### B. Update PostgreSQL password to load from `.env`
+Update the `DATABASES` block to load password dynamically:
+
+```python
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'driveclone',
+        'USER': 'postgres',
+        # Read DB_PASSWORD from .env. Default to 'password' if not set
+        'PASSWORD': env('DB_PASSWORD', default='password'),
+        'HOST': '127.0.0.1',
+        'PORT': '5432',
+    }
+}
+```
+
+#### C. Append AWS S3 Configuration at the Bottom of Settings
+Scroll to the very bottom of `settings.py` and append:
+
+```python
+# AWS S3 Storage Settings
+AWS_ACCESS_KEY_ID = env('AWS_ACCESS_KEY_ID', default=None)
+AWS_SECRET_ACCESS_KEY = env('AWS_SECRET_ACCESS_KEY', default=None)
+AWS_STORAGE_BUCKET_NAME = env('AWS_STORAGE_BUCKET_NAME', default=None)
+AWS_S3_REGION_NAME = env('AWS_S3_REGION_NAME', default='us-east-1')
+
+# S3 Security Configurations
+# 1. Block S3 from generating public read urls (keeps files private)
+AWS_DEFAULT_ACL = None
+# 2. Force S3 to use modern Signature Version 4 cryptography for presigning
+AWS_S3_SIGNATURE_VERSION = 's3v4'
+# 3. Prevent django-storages from exposing bucket query parameters in URLs
+AWS_QUERYSTRING_AUTH = True
+
+# Overwrite Django's default storage backend to use S3 for file uploads
+STORAGES = {
+    "default": {
+        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+```
+
+* **`STORAGES`**: Directs Django to route all `FileField` save streams through `S3Boto3Storage` instead of standard filesystem writes.
+* **`AWS_QUERYSTRING_AUTH = True`**: Tells `django-storages` to cryptographically sign file download URLs automatically.
+
+---
+
+## Request Lifecycle / Internals
+
+How file uploads are routed to AWS S3:
+
+```text
+  [ FileUploadView.post(request) ]
+                 │
+                 ▼
+  [ serializer.save(file=file_obj) ]
+                 │
+                 ▼
+  [ Django ORM FileField ]
+         ├── Identifies backend storage engine -> S3Boto3Storage
+         ▼
+  [ django-storages: S3Boto3Storage ]
+         ├── 1. Opens connection using AWS_ACCESS_KEY_ID & SECRET
+         ├── 2. Reads file stream (request.FILES['file'])
+         ├── 3. Compiles S3 object key path: "uploads/<filename>"
+         ├── 4. Streams bytes via HTTPS PUT request to AWS S3
+         ▼
+  [ AWS S3 Service ]
+         ├── 5. Confirms bytes received and writes to private bucket
+         ▼
+  [ PostgreSQL Database ]
+         └── 6. Saves the object key string path in files_file.file table column
+```
+
+---
+
+## How to Debug
+
+### Common Pitfalls:
+* **Missing Key warnings**: If you boot the server but Django crashes with `ImproperlyConfigured` or `KeyError`, verify that your `.env` file variables are named exactly as defined in `settings.py`.
+* **Access Denied (403 Forbidden)**: If file uploads fail, check that the S3 Bucket configuration permissions (IAM user policies) grant `s3:PutObject`, `s3:GetObject`, and `s3:DeleteObject` permissions to your IAM credential keys.
+
+---
+
+## Try It Yourself / Exercises
+* **Task**: Install the libraries. Create `backend/.env` containing your database password and AWS S3 credentials. Update `settings.py` as shown.
+* Run `..\venv\Scripts\python.exe manage.py check` to verify that environment variables load without syntax errors.
+
+---
+
+## Knowledge Check
+1. **Why does `django-storages` prevent us from having to write custom AWS S3 API upload scripts inside our view views?**
+2. **What does the `AWS_QUERYSTRING_AUTH = True` setting accomplish in terms of secure downloads?**
+3. **If you commit your `.env` file containing AWS keys to a public GitHub repository, what happens within minutes? (Hint: Bots scan github continually; keys will be leaked and AWS will freeze the account for safety).**
+
+---
+
+## Next Step
+We will move to **Step 16: List Files API** (Milestone 5) to implement the dashboard files listing containing presigned download URLs.
+
+---
+
+# Step 16 & 17: List Files & Download APIs
+
+## Goal
+Implement a listing serializer that automatically computes secure, temporary S3 download links, and write a dedicated download redirect endpoint (`GET /api/files/<id>/download/`) that routes clients directly to AWS S3.
+
+---
+
+## Why
+
+### 1. Generating Temporary Signed URLs
+Because our S3 bucket blocks public access, users cannot access files via standard links like `https://bucket.s3.amazonaws.com/uploads/file.pdf`. We must cryptographically sign S3 access tokens. 
+When Django serializes a `FileField` (inside `CompactFileSerializer`), `django-storages` automatically calls the S3 API to sign the URL. The generated URL contains temporary query arguments:
+* `AWSAccessKeyId`: Tells AWS S3 which account signature signed this request.
+* `Signature`: A cryptographically computed SHA signature hash verifying the requester has permissions.
+* `Expires`: A Unix epoch timestamp. After this timestamp passes, S3 immediately rejects access.
+
+### 2. The HTTP 302 Redirect Download Pattern
+Instead of reading file bytes from S3 and proxying them from Django to the user (which would slow down Django and consume server bandwidth), we use an **HTTP 302 Redirect**:
+1. The client requests to download a file from Django: `/api/files/5/download/`.
+2. Django verifies user ownership and calculates the temporary presigned URL.
+3. Django returns an HTTP `302 Found` redirect response containing the S3 URL in the `Location` header.
+4. The client's web browser automatically intercepts the 302 redirect and directly downloads the raw bytes from S3, saving server resources.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `docs/04_API.md` | **[MODIFY]** | Added specifications for the download redirect API. |
+| `backend/files/serializers.py` | **[MODIFY]** | Refined the compact file serializer to output the presigned url dynamically. |
+| `backend/files/views.py` | **[MODIFY]** | Added `FileDownloadView` that returns HTTP 302 redirects to S3 URLs. |
+| `backend/files/urls.py` | **[MODIFY]** | Mapped url path for the download endpoint. |
+
+---
+
+## Folder Structure
+No folder tree modifications; files are implemented inside the existing files sub-app.
+
+---
+
+## Code Explanation
+
+We will implement this across views and serializer structures:
+
+### 1. Refining `backend/files/serializers.py`
+We refine our `CompactFileSerializer` so it generates the presigned URL for file listings. (Note: Django does this automatically when serializing the `file` field because of our `settings.py` storage backend mapping!).
+
+```python
+from rest_framework import serializers
+from .models import File
+
+class CompactFileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = File
+        fields = ('id', 'name', 'file', 'size', 'uploaded_at', 'folder')
+```
+
+---
+
+### 2. Update `backend/files/views.py`
+We implement `FileDownloadView` using Django's `HttpResponseRedirect` class:
+
+```python
+from django.http import HttpResponseRedirect
+from django.shortcuts import get_object_or_404
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from .models import File
+
+class FileDownloadView(APIView):
+    # Enforce token security checks
+    permission_classes = [IsAuthenticated]
+
+    # GET /api/files/<id>/download/
+    def get(self, request, pk):
+        # 1. Fetch file record. Ensure the logged-in user owns it! (IDOR check)
+        file_record = get_object_or_404(File, pk=pk, user=request.user)
+        
+        # 2. Extract the S3 URL.
+        # Under the hood, accessing file_record.file.url triggers django-storages
+        # to generate the secure, presigned S3 download URL
+        s3_url = file_record.file.url
+        
+        # 3. Return an HTTP 302 Found redirect redirecting the client browser to S3
+        return HttpResponseRedirect(s3_url)
+```
+
+* **`HttpResponseRedirect(s3_url)`**: Compiles an HTTP response with status code `302` and appends the header `Location: <s3_url>`. The client browser handles this redirection automatically.
+
+---
+
+### 3. Update `backend/files/urls.py`
+Map routing pathways for the download view:
+
+```python
+from django.urls import path
+from .views import FileUploadView, FileDownloadView
+
+urlpatterns = [
+    # POST /api/files/upload/
+    path('upload/', FileUploadView.as_view(), name='file-upload'),
+    # GET /api/files/<id>/download/
+    path('<int:pk>/download/', FileDownloadView.as_view(), name='file-download'),
+]
+```
+
+---
+
+## Request Lifecycle / Internals
+
+Redirection request/response lifecycle:
+
+```text
+Browser/React                   Django API (Port 8000)                AWS S3 Bucket
+   │                                     │                                 │
+   │── 1. GET /api/files/5/download/ ───>│                                 │
+   │   (Auth Token Header)               │ (Validate token & ownership)    │
+   │                                     │── 2. Computes presigned URL ────> (Crypto signature math)
+   │                                     │<─ 3. Return presigned URL ──────│
+   │<─ 4. HTTP 302 Found (Redirect) ─────│                                 │
+   │      (Location: https://s3...)      │                                 │
+   │                                                                       │
+   │── 5. GET S3 URL (Location Header) ───────────────────────────────────>│
+   │<─ 6. Streams binary file bytes directly to User ──────────────────────│
+```
+
+---
+
+## How to Debug
+
+### Common Pitfalls:
+* **`OperationalError` or connection timeout**: Generating a presigned URL is an internal cryptographic calculation performed by `boto3` on your Django server using your credentials. **It does not make network calls to AWS**. If this step hangs or times out, it is usually because you are requesting a download and your client browser is hanging while trying to resolve S3 DNS addresses. Verify your local internet connection can access S3 buckets directly.
+* **403 Forbidden on S3**: If you follow the redirect but S3 returns `SignatureDoesNotMatch` or `AccessDenied` XML errors, check that:
+  1. Your AWS credentials in `.env` contain no typo errors.
+  2. Your S3 bucket name matches exactly.
+  3. The system clock on your local machine is synchronized. S3 checks the timestamp signature to prevent timestamp spoofing; if your computer's clock is off by a few minutes, S3 rejects the signature.
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Write the code modifications. Register the new download route patterns.
+* Run `..\venv\Scripts\python.exe manage.py check` to make sure settings compile cleanly.
+
+---
+
+## Knowledge Check
+1. **Why does returning an HTTP 302 redirect save bandwidth resources on our Django server?**
+2. **What does the S3 presigned URL query string contain to make it secure and temporary?**
+3. **If a user attempts to call `/api/files/15/download/` but file ID 15 belongs to a different user account, what does the view view return?**
+
+---
+
+## Next Step
+We will move to **Step 18: Delete API** (Milestone 5) to implement synchronized database and S3 file deletion rules.
+
+---
+
+# Step 18: Delete API
+
+## Goal
+Implement a secure file deletion endpoint (`DELETE /api/files/<id>/`) that removes the metadata row in PostgreSQL and deletes the corresponding object from the AWS S3 bucket.
+
+---
+
+## Why
+
+### The Orphaned Cloud Files Problem
+When deleting file records, we must maintain synchronization between PostgreSQL and S3. 
+By default, deleting a Django model instance (`file_record.delete()`) **does not** delete the file from your storage backend. The database row is removed, but the binary object remains in your S3 bucket. Over time, these orphaned files accumulate and generate unnecessary cloud storage costs.
+
+To solve this, we write an explicit deletion flow:
+1. Verify user ownership of the file record.
+2. Call **`file_record.file.delete(save=False)`**. This triggers `django-storages` to issue an AWS S3 `DeleteObject` request, deleting the cloud object.
+3. Call **`file_record.delete()`** to remove the database metadata row from PostgreSQL.
+4. Return an HTTP `204 No Content` status.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `docs/04_API.md` | **[MODIFY]** | Added specifications for the DELETE file endpoint. |
+| `backend/files/views.py` | **[MODIFY]** | Added `FileDetailView` supporting the DELETE method. |
+| `backend/files/urls.py` | **[MODIFY]** | Mapped url path for the file detail endpoints. |
+
+---
+
+## Folder Structure
+No directory structure changes; views are implemented inside the `files` app.
+
+---
+
+## Code Explanation
+
+We will implement this across views and serializer structures:
+
+### 1. Update `backend/files/views.py`
+Add `FileDetailView` below `FileDownloadView`:
+
+```python
+class FileDetailView(APIView):
+    # Enforce token security checks
+    permission_classes = [IsAuthenticated]
+
+    # DELETE /api/files/<id>/
+    def delete(self, request, pk):
+        # 1. Fetch file record. Enforces user ownership! (Prevents IDOR)
+        file_record = get_object_or_404(File, pk=pk, user=request.user)
+        
+        # 2. Delete the actual file object from the S3 Bucket
+        # Calling delete(save=False) triggers django-storages S3 engine
+        # to send a DeleteObject request to the S3 bucket API
+        file_record.file.delete(save=False)
+        
+        # 3. Delete the metadata row from PostgreSQL
+        file_record.delete()
+        
+        # 4. Return HTTP 204 No Content
+        return Response(status=status.HTTP_204_NO_CONTENT)
+```
+
+* **`file_record.file.delete(save=False)`**: Instructs S3 to remove the file. We pass `save=False` because we are about to delete the model record entirely anyway; there is no need for Django to run an unnecessary SQL `UPDATE` query before deleting.
+
+---
+
+### 2. Update `backend/files/urls.py`
+Map routing pathways for the file detail view:
+
+```python
+from django.urls import path
+from .views import FileUploadView, FileDownloadView, FileDetailView
+
+urlpatterns = [
+    # POST /api/files/upload/
+    path('upload/', FileUploadView.as_view(), name='file-upload'),
+    # GET /api/files/<id>/download/
+    path('<int:pk>/download/', FileDownloadView.as_view(), name='file-download'),
+    # DELETE /api/files/<id>/
+    path('<int:pk>/', FileDetailView.as_view(), name='file-detail'),
+]
+```
+
+---
+
+## Request Lifecycle / Internals
+
+Redirection request/response lifecycle:
+
+```text
+Browser/React                   Django API (Port 8000)                AWS S3 Bucket
+   │                                     │                                 │
+   │── 1. DELETE /api/files/5/ ────────>│                                 │
+   │   (Auth Token Header)               │ (Validate token & ownership)    │
+   │                                     │── 2. Call S3 DeleteObject API ─>│
+   │                                     │<─ 3. S3 Confirms Deletion ──────│ (File deleted from bucket)
+   │                                     │                                 │
+   │                                     │── 4. Executes SQL DELETE ──────> [ PostgreSQL DB ]
+   │                                     │      (Removes metadata row)     │ (Row removed)
+   │<─ 5. HTTP 204 No Content ───────────│                                 │
+```
+
+---
+
+## How to Debug
+
+### Common Pitfalls:
+* **AWS S3 Permission Denied**: If calling `file_record.file.delete(save=False)` throws a `ClientError` (403 Forbidden), check that your AWS IAM Policy includes `s3:DeleteObject` permissions for the credentials loaded in your `.env` file.
+* **Database Row Deleted but S3 Deletion Failed**: If the connection to S3 fails, the view will crash *before* reaching `file_record.delete()`. This is good: the DB row is preserved, allowing you to try again once network connectivity is restored.
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Write the code modifications. Register the new DELETE route patterns.
+* Run `..\venv\Scripts\python.exe manage.py check` to make sure settings compile cleanly.
+
+---
+
+## Knowledge Check
+1. **Why does Django not automatically delete associated files from storage when models are deleted?**
+2. **What does the `save=False` argument inside `file_record.file.delete(save=False)` accomplish?**
+3. **What HTTP status code is standard for successful deletions that return no response body?**
+
+---
+
+## Next Step
+We will move to **Step 19: End-to-End API Testing** (Milestone 5) to write automated integration tests verifying our complete API lifecycle.
+
+---
+
+# Step 19: End-to-End API Testing & Debugging
+
+## Goal
+Write automated integration tests inside `backend/files/tests.py` that cover our entire endpoint lifecycle (Register -> Login -> Create Folder -> Upload File -> List Contents -> Download Redirect -> Delete) while mocking AWS S3 to prevent external network calls.
+
+---
+
+## Why
+
+### 1. Mocking External Cloud Dependencies
+If we run our tests with S3 configured, the test suite will attempt to open actual HTTPS sockets to AWS S3. If we do not have an AWS account or are working offline, our test suite will crash. 
+To keep our test suite self-contained, fast, and free, we use Django's **`@override_settings`** decorator to dynamically swap out the `S3Boto3Storage` backend for `django.core.files.storage.InMemoryStorage` during the test run. Files are uploaded and deleted in system memory without hitting the network.
+
+### 2. Guarding Against Regressions
+Automated tests act as safety rails. As we proceed to build the React frontend, we might make subtle modifications to settings or models. If we break an API contract, our tests will instantly catch it, highlighting where the system failed before we write client integrations.
+
+---
+
+## Files Created/Modified
+
+| File Name | Change Type | Purpose |
+|---|---|---|
+| `backend/files/tests.py` | **[MODIFY]** | Added integration test suite class covering register, login, folders, uploads, redirects, and deletions. |
+
+---
+
+## Code Explanation
+
+### Update `backend/files/tests.py`
+We will replace the placeholder tests file with a complete integration test covering our complete backend feature set:
+
+```python
+from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import TestCase, override_settings
+from rest_framework import status
+from rest_framework.test import APIClient
+from rest_framework.authtoken.models import Token
+from folders.models import Folder
+from .models import File
+
+# Override storage to InMemoryStorage during the test run to avoid calling live AWS S3
+@override_settings(STORAGES={
+    "default": {
+        "BACKEND": "django.core.files.storage.InMemoryStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+})
+class DriveCloneAPITests(TestCase):
+    def setUp(self):
+        # 1. Instantiate the test client
+        self.client = APIClient()
+        
+        # 2. Create a test user record directly in the test database
+        self.username = "testuser"
+        self.password = "securepassword123"
+        self.email = "testuser@example.com"
+        self.user = User.objects.create_user(
+            username=self.username,
+            password=self.password,
+            email=self.email
+        )
+        
+        # 3. Create the auth token for this user
+        self.token = Token.objects.create(user=self.user)
+        
+        # 4. Configure the test client to include the Auth header in all subsequent requests
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + self.token.key)
+
+    def test_user_registration(self):
+        # Clear credentials for public registration check
+        client = APIClient()
+        payload = {
+            "username": "newstudent",
+            "email": "newstudent@example.com",
+            "password": "securepassword999"
+        }
+        response = client.post('/api/auth/register/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn('token', response.data)
+        self.assertEqual(response.data['user']['username'], "newstudent")
+
+    def test_user_login(self):
+        client = APIClient()
+        payload = {
+            "username": self.username,
+            "password": self.password
+        }
+        response = client.post('/api/auth/login/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('token', response.data)
+
+    def test_folder_creation_and_listing(self):
+        # 1. Create a root folder via API
+        payload = {"name": "Test Folder", "parent": None}
+        response = self.client.post('/api/folders/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        folder_id = response.data['id']
+        
+        # 2. List root contents. Verify the new folder is displayed
+        response = self.client.get('/api/folders/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['subfolders']), 1)
+        self.assertEqual(response.data['subfolders'][0]['name'], "Test Folder")
+
+    def test_file_upload_download_and_delete(self):
+        # 1. Create a parent folder
+        folder = Folder.objects.create(name="Upload Folder", user=self.user)
+        
+        # 2. Construct a mock binary file payload
+        mock_file = SimpleUploadedFile(
+            name="notes.txt",
+            content=b"Learning Full Stack Development is amazing!",
+            content_type="text/plain"
+        )
+        
+        # 3. POST upload request
+        payload = {
+            "file": mock_file,
+            "folder": folder.id
+        }
+        response = self.client.post('/api/files/upload/', payload, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        file_id = response.data['id']
+        self.assertEqual(response.data['name'], "notes.txt")
+        self.assertEqual(response.data['size'], 43)  # size in bytes of content string
+        
+        # 4. GET Download redirect check
+        response = self.client.get(f'/api/files/{file_id}/download/')
+        # Assert response is a 302 Found redirect
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        
+        # 5. DELETE File check
+        response = self.client.delete(f'/api/files/{file_id}/')
+        # Assert deletion succeeded with 204 No Content
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        # Verify row is removed from PostgreSQL database
+        self.assertFalse(File.objects.filter(id=file_id).exists())
+
+    def test_unauthenticated_api_rejection(self):
+        # Instantiate a client without token headers
+        unauth_client = APIClient()
+        response = unauth_client.get('/api/folders/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+```
+
+* **`@override_settings(...)`**: Dynamic settings switcher. During the execution of this test class, Django ignores `settings.py`'s S3 storage configuration and routes file saves directly into system memory (`InMemoryStorage`).
+* **`APIClient`**: DRF test client class that automates socket connection simulation and JSON/Multipart request formatting.
+* **`SimpleUploadedFile`**: Helper that wraps raw byte arrays (`b"..."`) in a standard file object mapping, mimicking a web browser's binary upload stream.
+
+---
+
+## Commands to Run Tests
+
+From the backend workspace directory, execute:
+
+```powershell
+# Run the complete automated test suite
+..\venv\Scripts\python.exe manage.py test
+```
+
+### Explanations:
+* `manage.py test`: Commands Django to:
+  1. Boot a temporary isolated database (e.g. `test_driveclone`).
+  2. Discover files matching `test*.py`.
+  3. Compile and execute all test methods starting with the prefix `test_`.
+  4. Tear down the test database, displaying a report.
+
+---
+
+## How to Debug
+
+### Common Failures:
+* **`AttributeError: 'InMemoryStorage' object has no attribute 'url'`**: If you override settings to `InMemoryStorage` but get an error during download URL checks, ensure your Django version supports `InMemoryStorage` URL calculations. If necessary, you can fall back to using `django.core.files.storage.FileSystemStorage` inside a temporary folder inside your project directory.
+* **`django.db.utils.ProgrammingError: database "test_driveclone" already exists`**: This happens if a previous test run crashed and failed to clean up. Django will ask: `Type 'yes' to clone it, or 'no' to abort`. Type `yes` inside your terminal to override and let Django run tests.
+
+---
+
+## Try It Yourself / Exercises
+* **Task 1**: Update `backend/files/tests.py` with the code above.
+* **Task 2**: Execute `..\venv\Scripts\python.exe manage.py test`. Verify that all tests pass successfully!
+
+---
+
+## Knowledge Check
+1. **Why do we override settings to `InMemoryStorage` during test suite executions?**
+2. **What does the `self.client.credentials(...)` call accomplish inside the `setUp` test helper?**
+3. **What database is used when you run `manage.py test`? Does it modify your live PostgreSQL database table rows?**
+
+---
+
+## Next Step
+We will move to **Milestone 6: Frontend Foundation** (Step 20) to initialize our React frontend application using Vite.
+
+
+
+
+
+
 
 
 
