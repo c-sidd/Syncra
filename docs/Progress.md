@@ -61,14 +61,14 @@ Track your progress by changing `[ ]` to `[x]` as you complete each step.
 ---
 
 ## Milestone 7: Frontend Integration
-- [ ] Build User Login Page Component
-- [ ] Build Main Dashboard Page Component
-- [ ] Build Folder navigation & creation Component
-- [ ] Build Upload handler UI
-- [ ] Connect APIs, manage loading states & handling error codes
+- [x] Build User Login Page Component
+- [x] Build Main Dashboard Page Component
+- [x] Build Folder navigation & creation Component
+- [x] Build Upload handler UI
+- [x] Connect APIs, manage loading states & handling error codes
 
 ---
 
 ## Milestone 8: Final Review & Capstone
-- [ ] Perform full-system integration test
-- [ ] Complete `10_FinalArchitecture.md`
+- [x] Perform full-system integration test
+- [x] Complete `10_FinalArchitecture.md`

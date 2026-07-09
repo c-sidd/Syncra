@@ -1,3 +1,4 @@
+from django.db.models import Sum
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -31,10 +32,14 @@ class FolderListCreateView(APIView):
         folder_serializer = FolderSerializer(folders, many=True)
         file_serializer = CompactFileSerializer(files, many=True)
         
+        # Calculate total storage used by user (all files in DB)
+        total_storage = File.objects.filter(user=request.user).aggregate(total=Sum('size'))['total'] or 0
+        
         return Response({
             "current_folder": None,
             "subfolders": folder_serializer.data,
-            "files": file_serializer.data
+            "files": file_serializer.data,
+            "total_storage_used": total_storage
         }, status=status.HTTP_200_OK)
 
     # POST /api/folders/ - Create a folder
@@ -67,8 +72,30 @@ class FolderDetailView(APIView):
         folder_serializer = FolderSerializer(subfolders, many=True)
         file_serializer = CompactFileSerializer(files, many=True)
         
+        # Calculate total storage used by user (all files in DB)
+        total_storage = File.objects.filter(user=request.user).aggregate(total=Sum('size'))['total'] or 0
+        
         return Response({
             "current_folder": FolderSerializer(current_folder).data,
             "subfolders": folder_serializer.data,
-            "files": file_serializer.data
+            "files": file_serializer.data,
+            "total_storage_used": total_storage
         }, status=status.HTTP_200_OK)
+
+    # DELETE /api/folders/<id>/ - Delete folder and all its contents
+    def delete(self, request, pk):
+        folder = get_object_or_404(Folder, pk=pk, user=request.user)
+        
+        # Recursively delete files from S3 first to avoid orphaned S3 objects
+        def delete_folder_contents_s3(f):
+            for file_record in File.objects.filter(folder=f):
+                file_record.file.delete(save=False)
+            for sub in Folder.objects.filter(parent=f):
+                delete_folder_contents_s3(sub)
+                
+        delete_folder_contents_s3(folder)
+        
+        # Cascade delete folders and files in DB
+        folder.delete()
+        
+        return Response(status=status.HTTP_204_NO_CONTENT)

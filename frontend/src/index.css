@@ -6,4 +6,9 @@
 /* Configure Custom Theme Tokens in Tailwind v4 */
 @theme {
   --font-sans: 'Outfit', system-ui, -apple-system, sans-serif;
+  --color-lavender: #cdb4db;
+  --color-rose: #ffc8dd;
+  --color-pink: #ffafcc;
+  --color-blue-light: #bde0fe;
+  --color-blue-brand: #a2d2ff;
 }

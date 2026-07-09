@@ -16,7 +16,7 @@ from .models import File
         "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
     },
 })
-class DriveCloneAPITests(TestCase):
+class SyncraAPITests(TestCase):
     def setUp(self):
         # 1. Instantiate the test client
         self.client = APIClient()

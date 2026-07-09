@@ -54,16 +54,16 @@ const Login = () => {
       {/* Sleek Dark Mode Glassmorphic Card Container */}
       <div className="w-full max-w-md p-8 bg-gray-900/40 backdrop-blur-md border border-gray-800 rounded-2xl shadow-xl flex flex-col gap-6">
         <div className="flex flex-col items-center gap-2">
-          <div className="w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400">
+          <div className="w-12 h-12 rounded-xl bg-lavender/10 border border-lavender/30 flex items-center justify-center text-lavender">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path>
             </svg>
           </div>
-          <h2 className="text-2xl font-bold tracking-tight">
-            {isRegister ? 'Create an Account' : 'Welcome Back'}
+          <h2 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-lavender via-pink to-blue-brand bg-clip-text text-transparent">
+            {isRegister ? 'Create an Account' : 'Welcome to Syncra'}
           </h2>
           <p className="text-sm text-gray-400 text-center">
-            {isRegister ? 'Sign up to start managing cloud files' : 'Enter credentials to access your drive'}
+            {isRegister ? 'Sign up to start managing cloud files' : 'Enter credentials to access your files'}
           </p>
         </div>
 
@@ -82,7 +82,7 @@ const Login = () => {
               required
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg focus:outline-none focus:border-purple-500 text-sm transition-all duration-200"
+              className="px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg focus:outline-none focus:border-lavender text-sm transition-all duration-200 focus:ring-1 focus:ring-lavender/30"
               placeholder="Enter username"
             />
           </div>
@@ -95,7 +95,7 @@ const Login = () => {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg focus:outline-none focus:border-purple-500 text-sm transition-all duration-200"
+                className="px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg focus:outline-none focus:border-lavender text-sm transition-all duration-200 focus:ring-1 focus:ring-lavender/30"
                 placeholder="Enter email address"
               />
             </div>
@@ -108,7 +108,7 @@ const Login = () => {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg focus:outline-none focus:border-purple-500 text-sm transition-all duration-200"
+              className="px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg focus:outline-none focus:border-lavender text-sm transition-all duration-200 focus:ring-1 focus:ring-lavender/30"
               placeholder="Enter password"
             />
           </div>
@@ -116,7 +116,7 @@ const Login = () => {
           <button
             type="submit"
             disabled={loading}
-            className="w-full mt-2 py-3 bg-purple-600 hover:bg-purple-500 disabled:bg-purple-800 text-sm font-semibold tracking-wide rounded-lg transition-all duration-200 cursor-pointer shadow-lg shadow-purple-500/10"
+            className="w-full mt-2 py-3 bg-gradient-to-r from-lavender via-pink to-blue-brand hover:brightness-110 disabled:from-gray-800 disabled:to-gray-900 disabled:text-gray-500 text-sm font-semibold tracking-wide rounded-lg transition-all duration-200 cursor-pointer shadow-lg shadow-pink-500/10 text-gray-950"
           >
             {loading ? 'Processing...' : isRegister ? 'Sign Up' : 'Log In'}
           </button>
@@ -129,7 +129,7 @@ const Login = () => {
               setIsRegister(!isRegister);
               setError(null);
             }}
-            className="text-xs font-medium text-purple-400 hover:text-purple-300 transition-colors duration-200 cursor-pointer"
+            className="text-xs font-medium text-pink hover:text-rose transition-colors duration-200 cursor-pointer"
           >
             {isRegister ? 'Already have an account? Log in' : "Don't have an account? Sign up"}
           </button>

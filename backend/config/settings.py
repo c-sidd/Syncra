@@ -156,6 +156,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",       # React development server (default host)
     "http://127.0.0.1:3000",       # Alternate localhost IP
+    "http://localhost:5173",       # Vite development server (default host)
+    "http://127.0.0.1:5173",       # Alternate Vite host
 ]
 
 # Django REST Framework Settings
@@ -171,6 +173,7 @@ AWS_ACCESS_KEY_ID = env('AWS_ACCESS_KEY_ID', default=None)
 AWS_SECRET_ACCESS_KEY = env('AWS_SECRET_ACCESS_KEY', default=None)
 AWS_STORAGE_BUCKET_NAME = env('AWS_STORAGE_BUCKET_NAME', default=None)
 AWS_S3_REGION_NAME = env('AWS_S3_REGION_NAME', default='us-east-1')
+AWS_S3_ENDPOINT_URL = f"https://s3.{AWS_S3_REGION_NAME}.amazonaws.com"
 
 # S3 Security Configurations
 # 1. Block S3 from generating public read urls (keeps files private)
