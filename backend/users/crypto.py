@@ -1,13 +1,12 @@
-import base64
-import hashlib
-
 from cryptography.fernet import Fernet
 from django.conf import settings
 
 
 def _fernet():
-    key = base64.urlsafe_b64encode(hashlib.sha256(settings.SECRET_KEY.encode()).digest())
-    return Fernet(key)
+    key = getattr(settings, 'CREDENTIAL_ENCRYPTION_KEY', None)
+    if not key:
+        raise RuntimeError('CREDENTIAL_ENCRYPTION_KEY is not configured.')
+    return Fernet(key.encode())
 
 
 def encrypt_value(value: str) -> str:
