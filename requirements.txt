@@ -1,1 +1,9 @@
--r backend/requirements.txt
+Django==4.2.30
+djangorestframework
+django-cors-headers
+django-environ
+django-storages
+boto3
+psycopg2-binary
+cryptography
+gunicorn
