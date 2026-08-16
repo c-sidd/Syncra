@@ -1,3 +1,6 @@
+import uuid
+
+from botocore.exceptions import BotoCoreError, ClientError
 from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
@@ -5,68 +8,74 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
+
 from .serializers import FileSerializer
 from .models import File
+from users.views import get_s3_client
+
 
 class FileUploadView(APIView):
-    # Restrict endpoint to authenticated users
     permission_classes = [IsAuthenticated]
-    
-    # Configure parsers to decode binary multipart form segments
     parser_classes = (MultiPartParser, FormParser)
 
     def post(self, request):
-        # Instantiate the serializer, passing the request context to filter target folders
+        client, connection = get_s3_client(request.user)
+        if not connection:
+            return Response({'detail': 'Connect an AWS S3 bucket in Account settings before uploading.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        file_obj = request.FILES.get('file')
+        if not file_obj:
+            return Response({'file': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = FileSerializer(data=request.data, context={'request': request})
-        
-        if serializer.is_valid():
-            # Retrieve the file stream object from request's parsed binary segments
-            file_obj = request.FILES.get('file')
-            if not file_obj:
-                return Response({"file": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
-                
-            # Extract file metadata properties
-            file_size = file_obj.size
-            file_name = file_obj.name
-            
-            # Save the file record, mapping it to request.user and attaching metadata parameters
-            serializer.save(
-                user=request.user,
-                name=file_name,
-                size=file_size
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        folder = serializer.validated_data.get('folder')
+        prefix = f'{request.user.id}/'
+        if folder:
+            prefix += f'{folder.id}/'
+        object_key = f'{prefix}{uuid.uuid4().hex}-{file_obj.name}'
+
+        try:
+            client.upload_fileobj(
+                file_obj,
+                connection.bucket_name,
+                object_key,
+                ExtraArgs={'ContentType': file_obj.content_type or 'application/octet-stream', 'StorageClass': 'STANDARD'},
             )
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-            
-        # Return field validation errors
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except (ClientError, BotoCoreError) as exc:
+            return Response({'detail': f'S3 upload failed: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        record = serializer.save(user=request.user, name=file_obj.name, size=file_obj.size, object_key=object_key, storage_class='STANDARD')
+        return Response(FileSerializer(record, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
 
 class FileDownloadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
-        # Fetch file record. Enforces user ownership! (Prevents IDOR)
-        file_record = get_object_or_404(File, pk=pk, user=request.user)
-        # file_record.file.url returns the presigned URL computed by django-storages
-        s3_url = file_record.file.url
-        # Redirect browser directly to download bytes from S3
-        return HttpResponseRedirect(s3_url)
+        record = get_object_or_404(File, pk=pk, user=request.user)
+        client, connection = get_s3_client(request.user)
+        if not connection:
+            return Response({'detail': 'Connect your S3 storage first.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            url = client.generate_presigned_url('get_object', Params={'Bucket': connection.bucket_name, 'Key': record.object_key}, ExpiresIn=300)
+        except (ClientError, BotoCoreError) as exc:
+            return Response({'detail': f'Unable to create download link: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+        return HttpResponseRedirect(url)
+
 
 class FileDetailView(APIView):
-    # Enforce token security checks
     permission_classes = [IsAuthenticated]
 
-    # DELETE /api/files/<id>/
     def delete(self, request, pk):
-        # 1. Fetch file record. Enforces user ownership! (Prevents IDOR)
-        file_record = get_object_or_404(File, pk=pk, user=request.user)
-        
-        # 2. Delete the actual file object from the S3 Bucket
-        # Calling delete(save=False) triggers django-storages S3 engine
-        # to send a DeleteObject request to the S3 bucket API
-        file_record.file.delete(save=False)
-        
-        # 3. Delete the metadata row from PostgreSQL
-        file_record.delete()
-        
-        # 4. Return HTTP 204 No Content
+        record = get_object_or_404(File, pk=pk, user=request.user)
+        client, connection = get_s3_client(request.user)
+        if connection:
+            try:
+                client.delete_object(Bucket=connection.bucket_name, Key=record.object_key)
+            except (ClientError, BotoCoreError) as exc:
+                return Response({'detail': f'S3 delete failed: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+        record.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
