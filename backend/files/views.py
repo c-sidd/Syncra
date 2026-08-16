@@ -1,7 +1,6 @@
 import uuid
 
 from botocore.exceptions import BotoCoreError, ClientError
-from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -21,7 +20,10 @@ class FileUploadView(APIView):
     def post(self, request):
         client, connection = get_s3_client(request.user)
         if not connection:
-            return Response({'detail': 'Connect an AWS S3 bucket in Account settings before uploading.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'detail': 'Connect an AWS S3 bucket in Account settings before uploading.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         file_obj = request.FILES.get('file')
         if not file_obj:
@@ -42,13 +44,25 @@ class FileUploadView(APIView):
                 file_obj,
                 connection.bucket_name,
                 object_key,
-                ExtraArgs={'ContentType': file_obj.content_type or 'application/octet-stream', 'StorageClass': 'STANDARD'},
+                ExtraArgs={
+                    'ContentType': file_obj.content_type or 'application/octet-stream',
+                    'StorageClass': 'STANDARD',
+                },
             )
         except (ClientError, BotoCoreError) as exc:
             return Response({'detail': f'S3 upload failed: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
 
-        record = serializer.save(user=request.user, name=file_obj.name, size=file_obj.size, object_key=object_key, storage_class='STANDARD')
-        return Response(FileSerializer(record, context={'request': request}).data, status=status.HTTP_201_CREATED)
+        record = serializer.save(
+            user=request.user,
+            name=file_obj.name,
+            size=file_obj.size,
+            object_key=object_key,
+            storage_class='STANDARD',
+        )
+        return Response(
+            FileSerializer(record, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class FileDownloadView(APIView):
@@ -59,11 +73,22 @@ class FileDownloadView(APIView):
         client, connection = get_s3_client(request.user)
         if not connection:
             return Response({'detail': 'Connect your S3 storage first.'}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
-            url = client.generate_presigned_url('get_object', Params={'Bucket': connection.bucket_name, 'Key': record.object_key}, ExpiresIn=300)
+            url = client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': connection.bucket_name, 'Key': record.object_key},
+                ExpiresIn=300,
+            )
         except (ClientError, BotoCoreError) as exc:
-            return Response({'detail': f'Unable to create download link: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
-        return HttpResponseRedirect(url)
+            return Response(
+                {'detail': f'Unable to create download link: {exc}'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Return the short-lived URL to the authenticated frontend.
+        # The browser can then download directly from S3 without exposing AWS keys.
+        return Response({'url': url, 'expires_in': 300})
 
 
 class FileDetailView(APIView):
