@@ -1,6 +1,6 @@
 Django==4.2.30
 djangorestframework
- django-cors-headers
+django-cors-headers
 django-environ
 django-storages
 boto3
