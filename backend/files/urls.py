@@ -1,11 +1,10 @@
 from django.urls import path
-from .views import FileUploadView, FileDownloadView, FileDetailView
+from .views import FileUploadView, FilePresignUploadView, FileCompleteUploadView, FileDownloadView, FileDetailView
 
 urlpatterns = [
-    # Map POST /api/files/upload/ to FileUploadView
     path('upload/', FileUploadView.as_view(), name='file-upload'),
-    # Map GET /api/files/<id>/download/ to FileDownloadView
+    path('upload/presign/', FilePresignUploadView.as_view(), name='file-upload-presign'),
+    path('upload/complete/', FileCompleteUploadView.as_view(), name='file-upload-complete'),
     path('<int:pk>/download/', FileDownloadView.as_view(), name='file-download'),
-    # Map DELETE /api/files/<id>/ to FileDetailView
     path('<int:pk>/', FileDetailView.as_view(), name='file-detail'),
 ]
