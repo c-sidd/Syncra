@@ -30,6 +30,12 @@ class FileUploadView(APIView):
         if not file_obj:
             return Response({'file': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
 
+        try:
+            safe_name = FileSerializer.validate_upload_name(file_obj.name)
+        except Exception as exc:
+            message = exc.detail if hasattr(exc, 'detail') else str(exc)
+            return Response({'file': [message]}, status=status.HTTP_400_BAD_REQUEST)
+
         max_size = settings.MAX_UPLOAD_SIZE_BYTES
         if file_obj.size > max_size:
             return Response(
@@ -49,7 +55,7 @@ class FileUploadView(APIView):
         prefix = f'{request.user.id}/'
         if folder:
             prefix += f'{folder.id}/'
-        object_key = f'{prefix}{uuid.uuid4().hex}-{file_obj.name}'
+        object_key = f'{prefix}{uuid.uuid4().hex}-{safe_name}'
 
         try:
             client.upload_fileobj(
@@ -61,19 +67,18 @@ class FileUploadView(APIView):
                     'StorageClass': 'STANDARD',
                 },
             )
-        except (ClientError, BotoCoreError) as exc:
+        except (ClientError, BotoCoreError):
             return Response({'detail': 'S3 upload failed.'}, status=status.HTTP_502_BAD_GATEWAY)
 
         try:
             record = serializer.save(
                 user=request.user,
-                name=file_obj.name,
+                name=safe_name,
                 size=file_obj.size,
                 object_key=object_key,
                 storage_class='STANDARD',
             )
         except Exception:
-            # Keep the database and bucket consistent when metadata creation fails.
             try:
                 client.delete_object(Bucket=connection.bucket_name, Key=object_key)
             except (ClientError, BotoCoreError):
@@ -101,7 +106,7 @@ class FileDownloadView(APIView):
                 Params={'Bucket': connection.bucket_name, 'Key': record.object_key},
                 ExpiresIn=300,
             )
-        except (ClientError, BotoCoreError) as exc:
+        except (ClientError, BotoCoreError):
             return Response(
                 {'detail': 'Unable to create download link.'},
                 status=status.HTTP_502_BAD_GATEWAY,
