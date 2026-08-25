@@ -63,8 +63,8 @@ class AWSConnectionView(APIView):
         try:
             s3 = boto3.client('s3', aws_access_key_id=access_key_id, aws_secret_access_key=secret_access_key, region_name=region)
             s3.head_bucket(Bucket=bucket_name)
-        except (ClientError, BotoCoreError, NoCredentialsError) as exc:
-            return Response({'detail': f'AWS connection failed: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+        except (ClientError, BotoCoreError, NoCredentialsError):
+            return Response({'detail': 'AWS connection failed. Check the credentials, region, bucket, and permissions.'}, status=status.HTTP_400_BAD_REQUEST)
         connection, _ = AWSConnection.objects.update_or_create(user=request.user, defaults={'name': name, 'access_key_id': access_key_id, 'secret_access_key': encrypt_value(secret_access_key), 'region': region, 'bucket_name': bucket_name})
         return Response({'connected': True, 'id': connection.id, 'name': connection.name, 'region': connection.region, 'bucket_name': connection.bucket_name}, status=status.HTTP_201_CREATED)
 
@@ -92,10 +92,7 @@ class AWSLifecycleView(APIView):
             raise
 
     def _save_rules(self, client, bucket_name, rules):
-        client.put_bucket_lifecycle_configuration(
-            Bucket=bucket_name,
-            LifecycleConfiguration={'Rules': rules},
-        )
+        client.put_bucket_lifecycle_configuration(Bucket=bucket_name, LifecycleConfiguration={'Rules': rules})
 
     def post(self, request):
         client, connection = get_s3_client(request.user)
@@ -110,15 +107,10 @@ class AWSLifecycleView(APIView):
             return Response({'detail': 'Choose valid days and storage class.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             rules = [rule for rule in self._get_rules(client, connection.bucket_name) if rule.get('ID') != self._rule_id(request.user)]
-            rules.append({
-                'ID': self._rule_id(request.user),
-                'Status': 'Enabled',
-                'Filter': {'Prefix': f'{request.user.id}/'},
-                'Transitions': [{'Days': days, 'StorageClass': storage_class}],
-            })
+            rules.append({'ID': self._rule_id(request.user), 'Status': 'Enabled', 'Filter': {'Prefix': f'{request.user.id}/'}, 'Transitions': [{'Days': days, 'StorageClass': storage_class}]})
             self._save_rules(client, connection.bucket_name, rules)
-        except (ClientError, BotoCoreError) as exc:
-            return Response({'detail': f'Could not save lifecycle rule: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+        except (ClientError, BotoCoreError):
+            return Response({'detail': 'Could not save the lifecycle rule in S3.'}, status=status.HTTP_502_BAD_GATEWAY)
         return Response({'enabled': True, 'days': days, 'storage_class': storage_class})
 
     def delete(self, request):
@@ -128,6 +120,6 @@ class AWSLifecycleView(APIView):
         try:
             rules = [rule for rule in self._get_rules(client, connection.bucket_name) if rule.get('ID') != self._rule_id(request.user)]
             self._save_rules(client, connection.bucket_name, rules)
-        except (ClientError, BotoCoreError) as exc:
-            return Response({'detail': f'Could not remove lifecycle rule: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+        except (ClientError, BotoCoreError):
+            return Response({'detail': 'Could not remove the lifecycle rule from S3.'}, status=status.HTTP_502_BAD_GATEWAY)
         return Response({'enabled': False})
