@@ -22,11 +22,14 @@ MULTIPART_MAX_PARTS = 10_000
 
 def storage_client(request):
     try:
-        client, connection = get_s3_client(request.user)
-    except (BotoCoreError, ClientError):
+        result = get_s3_client(request.user)
+        if not result or len(result) != 2:
+            return None, None, Response({'detail': 'Unable to connect to S3 storage.'}, status=status.HTTP_502_BAD_GATEWAY)
+        client, connection = result
+    except (BotoCoreError, ClientError, TypeError, ValueError):
         return None, None, Response({'detail': 'Unable to connect to S3 storage.'}, status=status.HTTP_502_BAD_GATEWAY)
     if not connection:
-        return None, None, Response({'detail': 'Connect your AWS S3 bucket before uploading.'}, status=status.HTTP_400_BAD_REQUEST)
+        return None, None, Response({'detail': 'Connect your AWS S3 bucket before uploading files.'}, status=status.HTTP_400_BAD_REQUEST)
     return client, connection, None
 
 
@@ -205,9 +208,6 @@ class FileUploadView(APIView):
     parser_classes = (MultiPartParser, FormParser)
 
     def post(self, request):
-        client, connection, error = storage_client(request)
-        if error:
-            return error
         file_obj = request.FILES.get('file')
         if not file_obj:
             return Response({'file': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
@@ -220,6 +220,9 @@ class FileUploadView(APIView):
         serializer = FileSerializer(data=request.data, context={'request': request})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        client, connection, error = storage_client(request)
+        if error:
+            return error
         folder = serializer.validated_data.get('folder')
         prefix = f'{request.user.id}/' + (f'{folder.id}/' if folder else '')
         key = f'{prefix}{uuid.uuid4().hex}-{safe_name}'
