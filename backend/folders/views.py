@@ -1,3 +1,4 @@
+from botocore.exceptions import BotoCoreError, ClientError
 from django.db.models import Sum
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -64,14 +65,21 @@ class FolderDetailView(APIView):
         folder = get_object_or_404(Folder, pk=pk, user=request.user)
         client, connection = get_s3_client(request.user)
 
-        # Delete every object represented by this folder tree from S3 first.
+        if not client or not connection:
+            return Response(
+                {'detail': 'S3 storage is not configured.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         def delete_folder_contents(current):
             for file_record in File.objects.filter(folder=current, user=request.user):
-                if client and connection:
-                    try:
-                        client.delete_object(Bucket=connection.bucket_name, Key=file_record.object_key)
-                    except Exception as exc:
-                        raise RuntimeError(f'Could not delete {file_record.name} from S3: {exc}')
+                try:
+                    client.delete_object(
+                        Bucket=connection.bucket_name,
+                        Key=file_record.object_key,
+                    )
+                except (ClientError, BotoCoreError) as exc:
+                    raise StorageDeletionError from exc
                 file_record.delete()
 
             for child in Folder.objects.filter(parent=current, user=request.user):
@@ -81,7 +89,14 @@ class FolderDetailView(APIView):
         try:
             delete_folder_contents(folder)
             folder.delete()
-        except RuntimeError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        except StorageDeletionError:
+            return Response(
+                {'detail': 'S3 deletion failed. Folder metadata was preserved for the remaining objects.'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class StorageDeletionError(Exception):
+    """Internal exception used to avoid exposing provider error details."""
