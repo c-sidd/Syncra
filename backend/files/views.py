@@ -2,6 +2,7 @@ import uuid
 
 from botocore.exceptions import BotoCoreError, ClientError
 from django.conf import settings
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -19,7 +20,11 @@ class FileUploadView(APIView):
     parser_classes = (MultiPartParser, FormParser)
 
     def post(self, request):
-        client, connection = get_s3_client(request.user)
+        try:
+            client, connection = get_s3_client(request.user)
+        except (BotoCoreError, ClientError):
+            return Response({'detail': 'Unable to connect to S3 storage.'}, status=status.HTTP_502_BAD_GATEWAY)
+
         if not connection:
             return Response(
                 {'detail': 'Connect an AWS S3 bucket in Account settings before uploading.'},
@@ -39,11 +44,7 @@ class FileUploadView(APIView):
         max_size = settings.MAX_UPLOAD_SIZE_BYTES
         if file_obj.size > max_size:
             return Response(
-                {
-                    'file': [
-                        f'File is too large. Maximum allowed size is {max_size // (1024 * 1024)} MB.'
-                    ]
-                },
+                {'file': [f'File is too large. Maximum allowed size is {max_size // (1024 * 1024)} MB.']},
                 status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             )
 
@@ -71,19 +72,23 @@ class FileUploadView(APIView):
             return Response({'detail': 'S3 upload failed.'}, status=status.HTTP_502_BAD_GATEWAY)
 
         try:
-            record = serializer.save(
-                user=request.user,
-                name=safe_name,
-                size=file_obj.size,
-                object_key=object_key,
-                storage_class='STANDARD',
-            )
+            with transaction.atomic():
+                record = serializer.save(
+                    user=request.user,
+                    name=safe_name,
+                    size=file_obj.size,
+                    object_key=object_key,
+                    storage_class='STANDARD',
+                )
         except Exception:
             try:
                 client.delete_object(Bucket=connection.bucket_name, Key=object_key)
             except (ClientError, BotoCoreError):
                 pass
-            raise
+            return Response(
+                {'detail': 'File metadata could not be saved. The upload was rolled back.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         return Response(
             FileSerializer(record, context={'request': request}).data,
@@ -96,7 +101,11 @@ class FileDownloadView(APIView):
 
     def get(self, request, pk):
         record = get_object_or_404(File, pk=pk, user=request.user)
-        client, connection = get_s3_client(request.user)
+        try:
+            client, connection = get_s3_client(request.user)
+        except (BotoCoreError, ClientError):
+            return Response({'detail': 'Unable to connect to S3 storage.'}, status=status.HTTP_502_BAD_GATEWAY)
+
         if not connection:
             return Response({'detail': 'Connect your S3 storage first.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -107,10 +116,7 @@ class FileDownloadView(APIView):
                 ExpiresIn=300,
             )
         except (ClientError, BotoCoreError):
-            return Response(
-                {'detail': 'Unable to create download link.'},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            return Response({'detail': 'Unable to create download link.'}, status=status.HTTP_502_BAD_GATEWAY)
 
         return Response({'url': url, 'expires_in': 300})
 
@@ -120,11 +126,18 @@ class FileDetailView(APIView):
 
     def delete(self, request, pk):
         record = get_object_or_404(File, pk=pk, user=request.user)
-        client, connection = get_s3_client(request.user)
-        if connection:
-            try:
-                client.delete_object(Bucket=connection.bucket_name, Key=record.object_key)
-            except (ClientError, BotoCoreError):
-                return Response({'detail': 'S3 delete failed.'}, status=status.HTTP_502_BAD_GATEWAY)
+        try:
+            client, connection = get_s3_client(request.user)
+        except (BotoCoreError, ClientError):
+            return Response({'detail': 'Unable to connect to S3 storage.'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        if not connection:
+            return Response({'detail': 'S3 storage is not configured.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            client.delete_object(Bucket=connection.bucket_name, Key=record.object_key)
+        except (ClientError, BotoCoreError):
+            return Response({'detail': 'S3 delete failed. File metadata was preserved.'}, status=status.HTTP_502_BAD_GATEWAY)
+
         record.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
