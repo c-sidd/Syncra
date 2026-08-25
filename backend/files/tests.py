@@ -61,6 +61,29 @@ class SyncraAPITests(TestCase):
         get_s3_client.assert_not_called()
 
     @patch('files.views.get_s3_client')
+    def test_multipart_initiate_and_complete(self, get_s3_client):
+        folder = Folder.objects.create(name='Large Files', user=self.user)
+        mock_client = MagicMock()
+        mock_client.create_multipart_upload.return_value = {'UploadId': 'upload-123'}
+        mock_client.generate_presigned_url.side_effect = lambda operation, **kwargs: f'https://example.test/{operation}/{kwargs["Params"]["PartNumber"]}'
+        mock_client.head_object.return_value = {'ContentLength': 9 * 1024 * 1024, 'StorageClass': 'STANDARD'}
+        get_s3_client.return_value = (mock_client, MagicMock(bucket_name='test-bucket'))
+        response = self.client.post('/api/files/upload/multipart/initiate/', {'name': 'large.bin', 'size': 9 * 1024 * 1024, 'folder': folder.id}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['parts']), 2)
+        key = response.data['object_key']
+        response = self.client.post('/api/files/upload/multipart/complete/', {'object_key': key, 'upload_id': 'upload-123', 'name': 'large.bin', 'folder': folder.id, 'parts': [{'PartNumber': 1, 'ETag': '"a"'}, {'PartNumber': 2, 'ETag': '"b"'}]}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        mock_client.complete_multipart_upload.assert_called_once()
+        self.assertTrue(File.objects.filter(object_key=key, user=self.user).exists())
+
+    @patch('files.views.get_s3_client')
+    def test_multipart_rejects_invalid_parts(self, get_s3_client):
+        response = self.client.post('/api/files/upload/multipart/complete/', {'object_key': f'{self.user.id}/x', 'upload_id': 'u', 'parts': [{'PartNumber': 1, 'ETag': 'x'}, {'PartNumber': 1, 'ETag': 'y'}]}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        get_s3_client.assert_not_called()
+
+    @patch('files.views.get_s3_client')
     def test_file_upload_download_and_delete(self, get_s3_client):
         folder = Folder.objects.create(name='Upload Folder', user=self.user)
         mock_client = MagicMock()
