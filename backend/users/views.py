@@ -76,6 +76,26 @@ class AWSConnectionView(APIView):
 class AWSLifecycleView(APIView):
     permission_classes = [IsAuthenticated]
     allowed_classes = {'INTELLIGENT_TIERING', 'STANDARD_IA', 'GLACIER_IR', 'GLACIER', 'DEEP_ARCHIVE'}
+    syncra_rule_id_prefix = 'syncra-user-'
+
+    def _rule_id(self, user):
+        return f'{self.syncra_rule_id_prefix}{user.id}'
+
+    def _get_rules(self, client, bucket_name):
+        try:
+            response = client.get_bucket_lifecycle_configuration(Bucket=bucket_name)
+            return response.get('Rules', [])
+        except ClientError as exc:
+            error_code = exc.response.get('Error', {}).get('Code')
+            if error_code in {'NoSuchLifecycleConfiguration', 'NoSuchLifecycleConfigurationException'}:
+                return []
+            raise
+
+    def _save_rules(self, client, bucket_name, rules):
+        client.put_bucket_lifecycle_configuration(
+            Bucket=bucket_name,
+            LifecycleConfiguration={'Rules': rules},
+        )
 
     def post(self, request):
         client, connection = get_s3_client(request.user)
@@ -89,7 +109,14 @@ class AWSLifecycleView(APIView):
         if days < 1 or storage_class not in self.allowed_classes:
             return Response({'detail': 'Choose valid days and storage class.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            client.put_bucket_lifecycle_configuration(Bucket=connection.bucket_name, LifecycleConfiguration={'Rules': [{'ID': f'syncra-user-{request.user.id}', 'Status': 'Enabled', 'Filter': {'Prefix': f'{request.user.id}/'}, 'Transitions': [{'Days': days, 'StorageClass': storage_class}]}]})
+            rules = [rule for rule in self._get_rules(client, connection.bucket_name) if rule.get('ID') != self._rule_id(request.user)]
+            rules.append({
+                'ID': self._rule_id(request.user),
+                'Status': 'Enabled',
+                'Filter': {'Prefix': f'{request.user.id}/'},
+                'Transitions': [{'Days': days, 'StorageClass': storage_class}],
+            })
+            self._save_rules(client, connection.bucket_name, rules)
         except (ClientError, BotoCoreError) as exc:
             return Response({'detail': f'Could not save lifecycle rule: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
         return Response({'enabled': True, 'days': days, 'storage_class': storage_class})
@@ -99,7 +126,8 @@ class AWSLifecycleView(APIView):
         if not connection:
             return Response({'detail': 'Connect your S3 storage first.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            client.put_bucket_lifecycle_configuration(Bucket=connection.bucket_name, LifecycleConfiguration={'Rules': []})
+            rules = [rule for rule in self._get_rules(client, connection.bucket_name) if rule.get('ID') != self._rule_id(request.user)]
+            self._save_rules(client, connection.bucket_name, rules)
         except (ClientError, BotoCoreError) as exc:
-            return Response({'detail': f'Could not remove lifecycle rules: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': f'Could not remove lifecycle rule: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
         return Response({'enabled': False})
