@@ -13,6 +13,7 @@ const Navbar = () => {
       </Link>
       <div className="flex items-center gap-3">
         <Link to="/account" className="px-3.5 py-2 text-sm font-semibold text-gray-300 hover:text-white bg-gray-900 border border-gray-800 hover:border-pink/40 rounded-lg transition">Account</Link>
+        <Link to="/trash" className="px-3.5 py-2 text-sm font-semibold text-gray-300 hover:text-white bg-gray-900 border border-gray-800 hover:border-pink/40 rounded-lg transition">Trash</Link>
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-full bg-lavender/20 border border-lavender/50 flex items-center justify-center font-semibold text-lavender">{user.username.charAt(0).toUpperCase()}</div>
           <span className="hidden sm:inline text-sm font-medium text-gray-300">@{user.username}</span>

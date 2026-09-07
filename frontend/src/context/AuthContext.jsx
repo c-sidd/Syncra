@@ -56,8 +56,10 @@ export const AuthProvider = ({ children }) => {
   };
 
   // Logs the user out and clears states and cache
-  const logout = () => {
-    // Clear storage cache
+  const logout = async () => {
+    // Revoke the server token when possible. Clear the local session even if
+    // the network is unavailable so the user can always leave the device.
+    try { await api.post('/auth/logout/'); } catch { /* best-effort revoke */ }
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     

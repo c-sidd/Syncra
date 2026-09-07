@@ -39,10 +39,10 @@ class FolderListCreateView(APIView):
             request.query_params.get('folders_page', 1),
         )
         files_page, files_paginator = _paginate(
-            File.objects.filter(user=request.user, folder__isnull=True).order_by('-uploaded_at', 'id'),
+            File.objects.filter(user=request.user, folder__isnull=True, deleted_at__isnull=True).order_by('-uploaded_at', 'id'),
             request.query_params.get('files_page', 1),
         )
-        total_storage = File.objects.filter(user=request.user).aggregate(total=Sum('size'))['total'] or 0
+        total_storage = File.objects.filter(user=request.user, deleted_at__isnull=True).aggregate(total=Sum('size'))['total'] or 0
 
         return Response({
             'current_folder': None,
@@ -68,6 +68,15 @@ class FolderListCreateView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class FolderTreeView(APIView):
+    """Small, ownership-scoped folder list for move pickers."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        folders = Folder.objects.filter(user=request.user).order_by('name', 'id')
+        return Response(FolderSerializer(folders, many=True).data)
+
+
 class FolderDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -78,10 +87,10 @@ class FolderDetailView(APIView):
             request.query_params.get('folders_page', 1),
         )
         files_page, files_paginator = _paginate(
-            File.objects.filter(user=request.user, folder=current_folder).order_by('-uploaded_at', 'id'),
+            File.objects.filter(user=request.user, folder=current_folder, deleted_at__isnull=True).order_by('-uploaded_at', 'id'),
             request.query_params.get('files_page', 1),
         )
-        total_storage = File.objects.filter(user=request.user).aggregate(total=Sum('size'))['total'] or 0
+        total_storage = File.objects.filter(user=request.user, deleted_at__isnull=True).aggregate(total=Sum('size'))['total'] or 0
 
         return Response({
             'current_folder': FolderSerializer(current_folder).data,
@@ -98,6 +107,13 @@ class FolderDetailView(APIView):
                 'page_size': PAGE_SIZE,
             },
         }, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk):
+        folder = get_object_or_404(Folder, pk=pk, user=request.user)
+        serializer = FolderSerializer(folder, data=request.data, partial=True, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
     def delete(self, request, pk):
         folder = get_object_or_404(Folder, pk=pk, user=request.user)

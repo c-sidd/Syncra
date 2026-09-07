@@ -31,29 +31,25 @@ export async function directUpload(file, folderId = null, onProgress) {
       folder: folderId,
     });
     const { upload_id: uploadId, object_key: objectKey, part_size: partSize, parts } = init.data;
-    const completedParts = [];
-    let completedBytes = 0;
-
-    for (const part of parts) {
-      const start = (part.part_number - 1) * partSize;
-      const end = Math.min(start + partSize, file.size);
-      const blob = file.slice(start, end);
-      const etag = await uploadPart(part.url, blob, (loaded) => {
-        report(Math.round(((completedBytes + loaded) / file.size) * 100));
-      });
-      completedParts.push({ PartNumber: part.part_number, ETag: etag });
-      completedBytes += blob.size;
-      report(Math.round((completedBytes / file.size) * 100));
+    try {
+      const completedParts = [];
+      let completedBytes = 0;
+      for (const part of parts) {
+        const start = (part.part_number - 1) * partSize;
+        const end = Math.min(start + partSize, file.size);
+        const blob = file.slice(start, end);
+        const etag = await uploadPart(part.url, blob, (loaded) => report(Math.round(((completedBytes + loaded) / file.size) * 100)));
+        completedParts.push({ PartNumber: part.part_number, ETag: etag });
+        completedBytes += blob.size;
+        report(Math.round((completedBytes / file.size) * 100));
+      }
+      const complete = await api.post('/files/upload/multipart/complete/', { object_key: objectKey, upload_id: uploadId, parts: completedParts, name: file.name, folder: folderId });
+      return complete.data;
+    } catch (error) {
+      // Prevent unfinished multipart uploads from lingering in the customer's bucket.
+      try { await api.post('/files/upload/multipart/abort/', { object_key: objectKey, upload_id: uploadId }); } catch { /* cleanup retry can happen server-side */ }
+      throw error;
     }
-
-    const complete = await api.post('/files/upload/multipart/complete/', {
-      object_key: objectKey,
-      upload_id: uploadId,
-      parts: completedParts,
-      name: file.name,
-      folder: folderId,
-    });
-    return complete.data;
   }
 
   const presign = await api.post('/files/upload/presign/', {

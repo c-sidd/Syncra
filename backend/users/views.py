@@ -33,6 +33,15 @@ class LoginView(APIView):
         return Response({'non_field_errors': ['Unable to log in with provided credentials.']}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class LogoutView(APIView):
+    """Revoke the token used for this session."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        Token.objects.filter(key=request.auth).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 def get_s3_client(user):
     connection = AWSConnection.objects.filter(user=user).first()
     if not connection:
@@ -92,7 +101,12 @@ class AWSLifecycleView(APIView):
             raise
 
     def _save_rules(self, client, bucket_name, rules):
-        client.put_bucket_lifecycle_configuration(Bucket=bucket_name, LifecycleConfiguration={'Rules': rules})
+        if rules:
+            client.put_bucket_lifecycle_configuration(Bucket=bucket_name, LifecycleConfiguration={'Rules': rules})
+        else:
+            # S3 rejects an empty Rules list; removing the final rule requires
+            # the dedicated lifecycle-configuration delete API.
+            client.delete_bucket_lifecycle(Bucket=bucket_name)
 
     def post(self, request):
         client, connection = get_s3_client(request.user)
@@ -120,6 +134,9 @@ class AWSLifecycleView(APIView):
         try:
             rules = [rule for rule in self._get_rules(client, connection.bucket_name) if rule.get('ID') != self._rule_id(request.user)]
             self._save_rules(client, connection.bucket_name, rules)
-        except (ClientError, BotoCoreError):
+        except ClientError as exc:
+            if exc.response.get('Error', {}).get('Code') not in {'NoSuchLifecycleConfiguration', 'NoSuchLifecycleConfigurationException'}:
+                return Response({'detail': 'Could not remove the lifecycle rule from S3.'}, status=status.HTTP_502_BAD_GATEWAY)
+        except BotoCoreError:
             return Response({'detail': 'Could not remove the lifecycle rule from S3.'}, status=status.HTTP_502_BAD_GATEWAY)
         return Response({'enabled': False})

@@ -99,7 +99,14 @@ class SyncraAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         response = self.client.delete(f'/api/files/{file_id}/')
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
-        self.assertFalse(File.objects.filter(id=file_id).exists())
+        self.assertIsNotNone(File.objects.get(id=file_id).deleted_at)
+
+        response = self.client.get('/api/files/trash/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        response = self.client.post(f'/api/files/{file_id}/restore/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(File.objects.get(id=file_id).deleted_at)
 
     @patch('files.views.get_s3_client')
     def test_upload_rejected_when_file_is_too_large(self, get_s3_client):

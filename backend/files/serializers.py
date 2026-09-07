@@ -12,8 +12,9 @@ SAFE_FILE_NAME_RE = re.compile(r'^[^/\\\x00-\x1f\x7f]+$')
 class FileSerializer(serializers.ModelSerializer):
     class Meta:
         model = File
-        fields = ('id', 'name', 'size', 'uploaded_at', 'folder', 'storage_class')
-        read_only_fields = ('name', 'size', 'uploaded_at', 'storage_class')
+        fields = ('id', 'name', 'size', 'uploaded_at', 'folder', 'storage_class', 'deleted_at')
+        read_only_fields = ('size', 'uploaded_at', 'storage_class', 'deleted_at')
+        extra_kwargs = {'name': {'required': False}}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -42,3 +43,6 @@ class FileSerializer(serializers.ModelSerializer):
         if request and folder and folder.user_id != request.user.id:
             raise serializers.ValidationError({'folder': 'Invalid folder.'})
         return attrs
+
+    def validate_name(self, value):
+        return self.validate_upload_name(value)

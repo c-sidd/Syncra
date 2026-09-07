@@ -96,6 +96,14 @@ Open `http://localhost:5173`.
 
 The secret key is never returned by the Account API after it is stored.
 
+### Browser upload prerequisites
+
+Uploads go directly from the browser to S3. Configure bucket CORS to allow your
+Syncra web origin to make `PUT` requests and expose the `ETag` response header
+for multipart uploads. Use a dedicated IAM identity: scope `s3:GetObject`,
+`s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`, and lifecycle permissions
+to this bucket only. Never provide root-account credentials.
+
 ## 🧊 Glacier Automation
 
 Syncra can create an S3 Lifecycle rule scoped to the current user's prefix:
@@ -126,3 +134,5 @@ Lifecycle transitions are handled by **Amazon S3**, not by a background process 
 cd backend
 python manage.py test
 ```
+
+The frontend check is `npm run lint && npm run build` from `frontend`.
