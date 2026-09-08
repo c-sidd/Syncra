@@ -1,111 +1,24 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React,{useEffect,useRef,useState}from'react';
 import api from '../utils/api';
-import { directUpload } from '../utils/directUpload';
+import {directUpload} from '../utils/directUpload';
 
-const Dashboard = () => {
-  const navigate = useNavigate();
-  const fileInputRef = useRef(null);
-  const dragCounter = useRef(0);
-  const [currentFolder, setCurrentFolder] = useState(null);
-  const [folders, setFolders] = useState([]);
-  const [files, setFiles] = useState([]);
-  const [path, setPath] = useState([]);
-  const [totalStorageUsed, setTotalStorageUsed] = useState(0);
-  const [pagination, setPagination] = useState({ folders_page: 1, folders_pages: 1, folders_has_next: false, files_page: 1, files_pages: 1, files_has_next: false, page_size: 50 });
-  const [s3Connected, setS3Connected] = useState(false);
-  const [bucketName, setBucketName] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
-  const [actionLoading, setActionLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
-  const [moveDialog, setMoveDialog] = useState(null);
-
-  const loadConnection = async () => {
-    try {
-      const response = await api.get('/auth/aws/');
-      setS3Connected(Boolean(response.data.connected));
-      setBucketName(response.data.bucket_name || '');
-    } catch { setS3Connected(false); }
-  };
-
-  const loadFolderContents = async (folderId = null, folderPage = 1, filePage = 1) => {
-    setLoading(true); setError('');
-    try {
-      const base = folderId ? `/folders/${folderId}/` : '/folders/';
-      const response = await api.get(`${base}?folders_page=${folderPage}&files_page=${filePage}`);
-      setFolders(response.data.subfolders || []);
-      setFiles(response.data.files || []);
-      setTotalStorageUsed(response.data.total_storage_used || 0);
-      setPagination(response.data.pagination || pagination);
-    } catch (err) { setError(err.response?.data?.detail || 'Unable to load your drive.'); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { loadConnection(); loadFolderContents(); }, []);
-
-  const openFolder = (folder) => { setPath((p) => [...p, { id: folder.id, name: folder.name }]); setCurrentFolder(folder); loadFolderContents(folder.id); };
-  const goToBreadcrumb = (folder, index = -1) => { if (!folder) { setPath([]); setCurrentFolder(null); loadFolderContents(); } else { setPath((p) => p.slice(0, index + 1)); setCurrentFolder(folder); loadFolderContents(folder.id); } };
-  const getReadableError = (err, fallback) => { const data = err.response?.data; if (!data) return fallback; if (typeof data.detail === 'string') return data.detail; const key = Object.keys(data)[0]; if (key && Array.isArray(data[key])) return `${key}: ${data[key][0]}`; return fallback; };
-
-  const handleCreateFolder = async (event) => {
-    event.preventDefault(); const name = newFolderName.trim(); if (!name) return;
-    setActionLoading(true); setError('');
-    try { const response = await api.post('/folders/', { name, parent: currentFolder?.id || null }); setFolders((p) => [...p, response.data]); setNewFolderName(''); setIsCreatingFolder(false); setMessage(`Folder "${name}" created.`); }
-    catch (err) { setError(getReadableError(err, 'Could not create the folder.')); }
-    finally { setActionLoading(false); }
-  };
-
-  const handleFileUpload = async (selectedFiles) => {
-    if (!selectedFiles?.length) return;
-    if (!s3Connected) { setError('Connect your AWS S3 bucket in Account before uploading files.'); return; }
-    setIsUploading(true); setUploadProgress(0); setError(''); setMessage('');
-    try {
-      for (const file of Array.from(selectedFiles)) {
-        const response = await directUpload(file, currentFolder?.id || null, setUploadProgress);
-        setFiles((p) => [...p, response]);
-        setTotalStorageUsed((p) => p + (response.size || 0));
-      }
-      setMessage(`${selectedFiles.length} file${selectedFiles.length > 1 ? 's' : ''} uploaded directly to S3.`);
-      setUploadProgress(100);
-    } catch (err) { setError(getReadableError(err, err.message || 'Upload failed. Check your S3 connection.')); }
-    finally { setIsUploading(false); if (fileInputRef.current) fileInputRef.current.value = ''; }
-  };
-
-  const downloadFile = async (file) => { setError(''); try { const response = await api.get(`/files/${file.id}/download/`); window.open(response.data.url, '_blank', 'noopener,noreferrer'); } catch (err) { setError(getReadableError(err, 'Could not create a secure download link.')); } };
-  const deleteFile = async (file) => { if (!window.confirm(`Move "${file.name}" to Trash?`)) return; setActionLoading(true); setError(''); try { await api.delete(`/files/${file.id}/`); setFiles((p) => p.filter((i) => i.id !== file.id)); setTotalStorageUsed((p) => Math.max(0, p - (file.size || 0))); setMessage(`"${file.name}" moved to Trash.`); } catch (err) { setError(getReadableError(err, 'Could not move the file to Trash.')); } finally { setActionLoading(false); } };
-  const deleteFolder = async (folder) => { if (!window.confirm(`Delete "${folder.name}" and everything inside it?`)) return; setActionLoading(true); setError(''); try { await api.delete(`/folders/${folder.id}/`); await loadFolderContents(currentFolder?.id || null); setMessage(`"${folder.name}" deleted.`); } catch (err) { setError(getReadableError(err, 'Could not delete the folder.')); } finally { setActionLoading(false); } };
-  const renameItem = async (kind, item) => { const name = window.prompt(`Rename ${kind}`, item.name)?.trim(); if (!name || name === item.name) return; try { await api.patch(`/${kind === 'folder' ? 'folders' : 'files'}/${item.id}/`, { name }); await loadFolderContents(currentFolder?.id || null); setMessage(`${kind === 'folder' ? 'Folder' : 'File'} renamed.`); } catch (err) { setError(getReadableError(err, `Could not rename the ${kind}.`)); } };
-  const openMove = async (kind, item) => { try { const folders = (await api.get('/folders/tree/')).data; setMoveDialog({ kind, item, folders }); } catch { setError('Unable to load folders for moving.'); } };
-  const moveItem = async (folderId) => { if (!moveDialog) return; try { await api.patch(`/${moveDialog.kind === 'folder' ? 'folders' : 'files'}/${moveDialog.item.id}/`, { [moveDialog.kind === 'folder' ? 'parent' : 'folder']: folderId }); setMoveDialog(null); await loadFolderContents(currentFolder?.id || null); setMessage(`${moveDialog.kind === 'folder' ? 'Folder' : 'File'} moved.`); } catch (err) { setError(getReadableError(err, 'Could not move this item.')); } };
-  const formatBytes = (bytes) => { if (!bytes) return '0 B'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1); return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`; };
-  const formatDate = (date) => date ? new Date(date).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
-  const getFileIcon = (name) => { const extension = name.split('.').pop()?.toLowerCase(); const icon = ['jpg','jpeg','png','gif','webp','svg'].includes(extension) ? '▧' : extension === 'pdf' ? 'PDF' : ['mp4','mkv','mov','avi','webm'].includes(extension) ? '▶' : ['mp3','wav','ogg','flac'].includes(extension) ? '♫' : ['zip','rar','7z','tar','gz'].includes(extension) ? 'ZIP' : 'DOC'; return <span className="text-[10px] font-black tracking-tight">{icon}</span>; };
-  const handleDragEnter = (event) => { event.preventDefault(); dragCounter.current += 1; if (event.dataTransfer.items?.length) setIsDragging(true); };
-  const handleDragLeave = (event) => { event.preventDefault(); dragCounter.current -= 1; if (dragCounter.current <= 0) { dragCounter.current = 0; setIsDragging(false); } };
-  const handleDrop = (event) => { event.preventDefault(); dragCounter.current = 0; setIsDragging(false); if (event.dataTransfer.files?.length) handleFileUpload(event.dataTransfer.files); };
-
-  return (
-    <div className="relative flex-1 min-h-full bg-gray-950 text-white font-sans overflow-hidden" onDragEnter={handleDragEnter} onDragOver={(e) => e.preventDefault()} onDragLeave={handleDragLeave} onDrop={handleDrop}>
-      <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => handleFileUpload(e.target.files)} />
-      <main className="h-full overflow-y-auto p-5 md:p-8 lg:p-10 pb-28"><div className="max-w-7xl mx-auto">
-        <header className="flex flex-col lg:flex-row lg:items-end justify-between gap-5 border-b border-gray-900 pb-6"><div><div className="flex items-center gap-3 mb-2"><h1 className="text-3xl md:text-4xl font-black tracking-tight">{currentFolder?.name || 'My Drive'}</h1><span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${s3Connected ? 'text-emerald-300 border-emerald-500/20 bg-emerald-500/10' : 'text-amber-300 border-amber-500/20 bg-amber-500/10'}`}>{s3Connected ? 'S3 connected' : 'S3 not connected'}</span></div><div className="flex items-center gap-1.5 text-xs text-gray-500 overflow-x-auto whitespace-nowrap"><button onClick={() => goToBreadcrumb(null)} className="hover:text-white transition">Root</button>{path.map((item,index)=><React.Fragment key={item.id}><span className="text-gray-700">/</span><button onClick={() => goToBreadcrumb(item,index)} className="hover:text-white transition max-w-36 truncate">{item.name}</button></React.Fragment>)}</div></div><div className="flex flex-wrap gap-2"><button onClick={() => setIsCreatingFolder(true)} className="px-4 py-2.5 rounded-xl border border-gray-800 bg-gray-900/60 hover:bg-gray-800 text-sm font-semibold transition">+ New Folder</button><button onClick={() => fileInputRef.current?.click()} disabled={!s3Connected || isUploading} className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-lavender via-pink to-blue-brand text-gray-950 text-sm font-extrabold transition hover:brightness-110 disabled:opacity-40">↑ Upload File</button></div></header>
-        {isCreatingFolder && <form onSubmit={handleCreateFolder} className="mt-5 flex flex-col sm:flex-row gap-2 rounded-xl border border-gray-800 bg-gray-900/60 p-3"><input autoFocus value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} placeholder="Folder name" maxLength="255" className="flex-1 rounded-lg bg-gray-950 border border-gray-800 px-3 py-2 text-sm outline-none focus:border-lavender" /><button disabled={actionLoading} className="rounded-lg bg-lavender px-4 py-2 text-sm font-bold text-gray-950 disabled:opacity-50">Create</button><button type="button" onClick={() => { setIsCreatingFolder(false); setNewFolderName(''); }} className="rounded-lg border border-gray-700 px-4 py-2 text-sm">Cancel</button></form>}
-        {moveDialog && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-md rounded-2xl border border-gray-700 bg-gray-900 p-5"><h2 className="text-lg font-bold">Move {moveDialog.item.name}</h2><p className="mt-1 text-sm text-gray-400">Choose a destination folder.</p><div className="mt-4 max-h-64 space-y-2 overflow-y-auto"><button onClick={() => moveItem(null)} className="w-full rounded-lg border border-gray-700 px-3 py-2 text-left hover:bg-gray-800">Root</button>{moveDialog.folders.filter((folder) => folder.id !== moveDialog.item.id).map((folder) => <button key={folder.id} onClick={() => moveItem(folder.id)} className="w-full rounded-lg border border-gray-700 px-3 py-2 text-left hover:bg-gray-800">📁 {folder.name}</button>)}</div><button onClick={() => setMoveDialog(null)} className="mt-4 text-sm text-gray-400">Cancel</button></div></div>}
-        {isDragging && <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-gray-950/75"><div className="rounded-2xl border-2 border-dashed border-lavender bg-gray-900 px-10 py-8 text-lg font-bold">Drop files to upload</div></div>}
-        {!s3Connected && <div className="mt-6 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"><div><p className="font-bold text-amber-200">Connect your own S3 storage to upload files</p><p className="text-sm text-gray-400 mt-1">Syncra stores your files in your AWS bucket.</p></div><button onClick={() => navigate('/account')} className="px-4 py-2 rounded-xl bg-amber-400 text-gray-950 font-bold text-sm">Connect S3</button></div>}
-        {error && <div className="mt-5 rounded-xl border border-red-500/20 bg-red-500/10 text-red-300 px-4 py-3 text-sm">{error}</div>}{message && <div className="mt-5 rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-300 px-4 py-3 text-sm">{message}</div>}
-        {isUploading && <div className="mt-5 rounded-xl border border-gray-800 bg-gray-900/60 p-4"><div className="flex justify-between text-xs text-gray-400 mb-2"><span>Uploading directly to S3…</span><span>{Math.round(uploadProgress)}%</span></div><div className="h-2 rounded-full bg-gray-800 overflow-hidden"><div className="h-full bg-lavender transition-all" style={{ width: `${uploadProgress}%` }} /></div></div>}
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6"><div className="rounded-2xl border border-gray-900 bg-gray-900/30 p-5"><p className="text-xs text-gray-500 uppercase tracking-wider font-bold">Storage used</p><p className="text-2xl font-black mt-2">{formatBytes(totalStorageUsed)}</p></div><div className="rounded-2xl border border-gray-900 bg-gray-900/30 p-5"><p className="text-xs text-gray-500 uppercase tracking-wider font-bold">Items here</p><p className="text-2xl font-black mt-2">{folders.length + files.length}</p><p className="text-xs text-gray-600 mt-1">Page {pagination.folders_page}/{pagination.folders_pages} folders · {pagination.files_page}/{pagination.files_pages} files</p></div><div className="rounded-2xl border border-gray-900 bg-gray-900/30 p-5"><p className="text-xs text-gray-500 uppercase tracking-wider font-bold">Storage provider</p><p className="text-2xl font-black mt-2 truncate">{s3Connected ? 'Amazon S3' : 'Not connected'}</p><p className="text-xs text-gray-600 mt-1 truncate">{bucketName || 'Connect a bucket in Account'}</p></div></section>
-        {loading ? <div className="min-h-80 flex items-center justify-center"><div className="w-9 h-9 rounded-full border-2 border-gray-800 border-t-lavender animate-spin" /></div> : <div className="mt-8 space-y-8"><section><div className="flex items-center justify-between mb-3"><h2 className="text-xs font-bold uppercase tracking-widest text-gray-500">Folders</h2><span className="text-xs text-gray-600">{folders.length}</span></div><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">{folders.map((folder)=><div key={folder.id} className="rounded-2xl border border-gray-900 bg-gray-900/30 p-4"><button onClick={()=>openFolder(folder)} className="min-w-0 text-left"><div className="font-bold truncate">📁 {folder.name}</div></button><div className="mt-3 flex gap-2"><button onClick={()=>renameItem('folder', folder)} className="text-xs text-gray-400">Rename</button><button onClick={()=>openMove('folder', folder)} className="text-xs text-gray-400">Move</button><button onClick={()=>deleteFolder(folder)} disabled={actionLoading} className="text-xs text-red-300">Delete</button></div></div>)}</div></section><section><div className="flex items-center justify-between mb-3"><h2 className="text-xs font-bold uppercase tracking-widest text-gray-500">Files</h2><span className="text-xs text-gray-600">{files.length}</span></div><div className="rounded-2xl border border-gray-900 overflow-hidden"><div className="divide-y divide-gray-900">{files.map((file)=><div key={file.id} className="flex items-center justify-between gap-4 p-4 bg-gray-900/20"><div className="min-w-0 flex items-center gap-3"><div className="w-10 h-10 rounded-xl bg-gray-900 flex items-center justify-center">{getFileIcon(file.name)}</div><div className="min-w-0"><p className="font-semibold truncate">{file.name}</p><p className="text-xs text-gray-600">{formatBytes(file.size)} · {formatDate(file.uploaded_at)}</p></div></div><div className="flex gap-2 shrink-0"><button onClick={()=>downloadFile(file)} className="px-3 py-2 rounded-lg border border-gray-800 text-xs">Download</button><button onClick={()=>renameItem('file', file)} className="px-3 py-2 rounded-lg border border-gray-800 text-xs">Rename</button><button onClick={()=>openMove('file', file)} className="px-3 py-2 rounded-lg border border-gray-800 text-xs">Move</button><button onClick={()=>deleteFile(file)} disabled={actionLoading} className="px-3 py-2 rounded-lg border border-gray-800 text-xs hover:text-red-300">Delete</button></div></div>)}</div></div></section></div>}
-        {(pagination.folders_has_next || pagination.files_has_next || pagination.folders_page > 1 || pagination.files_page > 1) && <div className="mt-6 flex flex-wrap gap-2 justify-center"><button disabled={pagination.folders_page<=1} onClick={()=>loadFolderContents(currentFolder?.id||null, Math.max(1,pagination.folders_page-1), pagination.files_page)} className="px-3 py-2 rounded-lg border border-gray-800 disabled:opacity-30">← Folders</button><span className="px-3 py-2 text-xs text-gray-500">Folders {pagination.folders_page}/{pagination.folders_pages} · Files {pagination.files_page}/{pagination.files_pages}</span><button disabled={!pagination.folders_has_next} onClick={()=>loadFolderContents(currentFolder?.id||null, pagination.folders_page+1, pagination.files_page)} className="px-3 py-2 rounded-lg border border-gray-800 disabled:opacity-30">Folders →</button><button disabled={!pagination.files_has_next} onClick={()=>loadFolderContents(currentFolder?.id||null, pagination.folders_page, pagination.files_page+1)} className="px-3 py-2 rounded-lg border border-gray-800 disabled:opacity-30">Files →</button></div>}
-      </div></main>
-    </div>
-  );
-};
-export default Dashboard;
+export default function Dashboard(){
+ const input=useRef(); const [folders,setFolders]=useState([]),[files,setFiles]=useState([]),[folder,setFolder]=useState(null),[query,setQuery]=useState(''),[results,setResults]=useState(null),[sort,setSort]=useState('newest'),[queue,setQueue]=useState([]),[preview,setPreview]=useState(null),[share,setShare]=useState(null),[error,setError]=useState('');
+ const load=async(id=null)=>{try{const r=await api.get(id?'/folders/'+id+'/':'/folders/');setFolders(r.data.subfolders||[]);setFiles(r.data.files||[]);setFolder(r.data.current_folder||null)}catch{setError('Unable to load drive.')}};
+ useEffect(()=>{load()},[]);
+ useEffect(()=>{const t=setTimeout(async()=>{if(!query.trim())return setResults(null);try{setResults((await api.get('/files/search/',{params:{q:query}})).data)}catch{}},300);return()=>clearTimeout(t)},[query]);
+ const ordered=[...(results?results.files:files)].sort((a,b)=>sort==='name'?a.name.localeCompare(b.name):sort==='size'?b.size-a.size:sort==='oldest'?new Date(a.uploaded_at)-new Date(b.uploaded_at):new Date(b.uploaded_at)-new Date(a.uploaded_at));
+ const upload=async(list)=>{const jobs=Array.from(list).map(f=>({file:f,progress:0,status:'queued'}));setQueue(q=>[...q,...jobs]);for(const job of jobs){setQueue(q=>q.map(x=>x===job?{...x,status:'uploading'}:x));try{await directUpload(job.file,folder?.id||null,p=>setQueue(q=>q.map(x=>x.file===job.file?{...x,progress:p}:x)));setQueue(q=>q.map(x=>x.file===job.file?{...x,progress:100,status:'done'}:x));await load(folder?.id)}catch{setQueue(q=>q.map(x=>x.file===job.file?{...x,status:'failed'}:x))}}};
+ const previewFile=async f=>{try{const r=await api.get('/files/'+f.id+'/download/');setPreview({...f,url:r.data.url})}catch{setError('Preview unavailable')}};
+ const makeShare=async f=>{try{setShare((await api.post('/files/'+f.id+'/share/',{})).data)}catch{setError('Could not create share link')}};
+ const remove=async f=>{if(confirm('Move this file to Trash?')){await api.delete('/files/'+f.id+'/');load(folder?.id)}};
+ return <main className="flex-1 bg-gray-950 text-white p-5 md:p-8"><div className="max-w-7xl mx-auto">
+ <div className="flex flex-wrap gap-3 justify-between items-center"><div><h1 className="text-3xl font-black">{folder?.name||'My Drive'}</h1><p className="text-gray-500">Your S3, simplified.</p></div><div className="flex gap-2"><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="🔍 Search files & folders" className="rounded-xl bg-gray-900 border border-gray-700 px-4 py-2"/><select value={sort} onChange={e=>setSort(e.target.value)} className="bg-gray-900 border border-gray-700 rounded-xl px-3"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="name">Name A-Z</option><option value="size">Largest</option></select><button onClick={()=>input.current.click()} className="rounded-xl bg-purple-400 text-black font-bold px-4">Upload</button><input ref={input} type="file" multiple hidden onChange={e=>upload(e.target.files)}/></div></div>
+ {error&&<p className="mt-4 text-red-300">{error}</p>}
+ {queue.length>0&&<section className="mt-5 rounded-xl border border-gray-800 p-4"><b>Upload queue</b>{queue.map((x,i)=><div key={i} className="mt-2"><div className="flex justify-between text-sm"><span>{x.file.name}</span><span>{x.status} {x.progress}%</span></div><div className="h-2 bg-gray-800 rounded"><div className="h-2 bg-purple-400 rounded" style={{width:x.progress+'%'}}/></div></div>)}</section>}
+ <section className="mt-8"><h2 className="text-sm uppercase text-gray-500 font-bold mb-3">Folders</h2><div className="grid sm:grid-cols-3 lg:grid-cols-5 gap-3">{(results?results.folders:folders).map(x=><button key={x.id} onClick={()=>load(x.id)} className="text-left p-4 rounded-xl bg-gray-900 border border-gray-800">📁 {x.name}</button>)}</div></section>
+ <section className="mt-8"><h2 className="text-sm uppercase text-gray-500 font-bold mb-3">Files</h2><div className="divide-y divide-gray-800 rounded-xl border border-gray-800">{ordered.map(f=><div key={f.id} className="p-4 flex justify-between gap-3"><button onClick={()=>previewFile(f)} className="text-left font-semibold truncate">{f.name}<span className="block text-xs text-gray-500">{Math.round((f.size||0)/1024)} KB</span></button><div className="flex gap-2"><button onClick={()=>previewFile(f)} className="text-sm">Preview</button><button onClick={()=>makeShare(f)} className="text-sm">Share</button><button onClick={()=>remove(f)} className="text-sm text-red-300">Delete</button></div></div>)}</div></section>
+ {preview&&<div className="fixed inset-0 bg-black/80 z-50 p-6 flex items-center justify-center"><div className="max-w-5xl max-h-full bg-gray-900 p-4 rounded-xl"><div className="flex justify-between mb-3"><b>{preview.name}</b><button onClick={()=>setPreview(null)}>✕</button></div>{/\.pdf$/i.test(preview.name)?<iframe title="preview" src={preview.url} className="w-[80vw] h-[75vh]"/>:/\.(png|jpg|jpeg|gif|webp)$/i.test(preview.name)?<img src={preview.url} className="max-w-[80vw] max-h-[75vh]"/>:<a href={preview.url} target="_blank" className="text-purple-300">Open file</a>}</div></div>}
+ {share&&<div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center"><div className="bg-gray-900 p-6 rounded-xl"><h2 className="font-bold">Share link created</h2><input readOnly value={share.url} className="mt-3 w-80 bg-gray-800 p-2"/><div className="mt-3 flex gap-2"><button onClick={()=>navigator.clipboard.writeText(share.url)}>Copy</button><button onClick={()=>setShare(null)}>Close</button></div></div></div>}
+ </div></main>
+}

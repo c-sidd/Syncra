@@ -55,10 +55,8 @@ REST_FRAMEWORK.update({
 # default. Railway and similar proxies set X-Forwarded-Proto.
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    # Explicit environment switches avoid breaking local/CI HTTP test clients.
-    # Production must set both values in its secret configuration.
-    SECURE_SSL_REDIRECT = env.bool('SECURE_SSL_REDIRECT', default=False)
-    SECURE_HSTS_SECONDS = env.int('SECURE_HSTS_SECONDS', default=0)
+    SECURE_SSL_REDIRECT = env.bool('SECURE_SSL_REDIRECT', default=True)
+    SECURE_HSTS_SECONDS = env.int('SECURE_HSTS_SECONDS', default=31536000)
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     SESSION_COOKIE_SECURE = True
@@ -70,3 +68,5 @@ REFERRER_POLICY = 'same-origin'
 # Reject oversized uploads before they reach application/S3 storage.
 # Override with MAX_UPLOAD_SIZE_BYTES in production if needed.
 MAX_UPLOAD_SIZE_BYTES = env.int('MAX_UPLOAD_SIZE_BYTES', default=100 * 1024 * 1024)
+# Optional per-user quota. Set to 0 for unlimited storage.
+STORAGE_QUOTA_BYTES = env.int('STORAGE_QUOTA_BYTES', default=0)

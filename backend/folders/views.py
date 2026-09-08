@@ -1,6 +1,7 @@
 from botocore.exceptions import BotoCoreError, ClientError
 from django.core.paginator import Paginator
 from django.db.models import Sum
+from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -35,7 +36,7 @@ class FolderListCreateView(APIView):
 
     def get(self, request):
         folders_page, folders_paginator = _paginate(
-            Folder.objects.filter(user=request.user, parent__isnull=True).order_by('name', 'id'),
+            Folder.objects.filter(user=request.user, parent__isnull=True, deleted_at__isnull=True).order_by('name', 'id'),
             request.query_params.get('folders_page', 1),
         )
         files_page, files_paginator = _paginate(
@@ -83,7 +84,7 @@ class FolderDetailView(APIView):
     def get(self, request, pk):
         current_folder = get_object_or_404(Folder, pk=pk, user=request.user)
         subfolders_page, subfolders_paginator = _paginate(
-            Folder.objects.filter(user=request.user, parent=current_folder).order_by('name', 'id'),
+            Folder.objects.filter(user=request.user, parent=current_folder, deleted_at__isnull=True).order_by('name', 'id'),
             request.query_params.get('folders_page', 1),
         )
         files_page, files_paginator = _paginate(
@@ -116,32 +117,69 @@ class FolderDetailView(APIView):
         return Response(serializer.data)
 
     def delete(self, request, pk):
-        folder = get_object_or_404(Folder, pk=pk, user=request.user)
-        client, connection = get_s3_client(request.user)
+        folder = get_object_or_404(Folder, pk=pk, user=request.user, deleted_at__isnull=True)
+        # V1 trash: preserve the entire tree and its files for recovery.
+        stack=[folder]
+        now=timezone.now()
+        while stack:
+            current=stack.pop(); current.deleted_at=now; current.save(update_fields=['deleted_at'])
+            File.objects.filter(folder=current,user=request.user,deleted_at__isnull=True).update(deleted_at=now)
+            stack.extend(Folder.objects.filter(parent=current,user=request.user,deleted_at__isnull=True))
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
+        client, connection = get_s3_client(request.user)
         if not client or not connection:
             return Response({'detail': 'S3 storage is not configured.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        def delete_folder_contents(current):
-            for file_record in File.objects.filter(folder=current, user=request.user):
-                try:
-                    client.delete_object(Bucket=connection.bucket_name, Key=file_record.object_key)
-                except (ClientError, BotoCoreError) as exc:
-                    raise StorageDeletionError from exc
-                file_record.delete()
-
-            for child in Folder.objects.filter(parent=current, user=request.user):
-                delete_folder_contents(child)
-                child.delete()
+        stack = [folder]
+        folders = []
+        files = []
+        while stack:
+            current = stack.pop()
+            folders.append(current)
+            stack.extend(Folder.objects.filter(parent=current, user=request.user))
+            files.extend(File.objects.filter(folder=current, user=request.user))
 
         try:
-            delete_folder_contents(folder)
-            folder.delete()
-        except StorageDeletionError:
-            return Response({'detail': 'S3 deletion failed. Folder metadata was preserved for the remaining objects.'}, status=status.HTTP_502_BAD_GATEWAY)
+            keys = [{'Key': item.object_key} for item in files]
+            for offset in range(0, len(keys), 1000):
+                batch = keys[offset:offset + 1000]
+                if not batch:
+                    continue
+                response = client.delete_objects(
+                    Bucket=connection.bucket_name,
+                    Delete={'Objects': batch, 'Quiet': True},
+                )
+                if response.get('Errors'):
+                    raise StorageDeletionError
+        except (ClientError, BotoCoreError, StorageDeletionError):
+            return Response({'detail': 'S3 deletion failed. Folder metadata was not removed.'}, status=status.HTTP_502_BAD_GATEWAY)
 
+        from django.db import transaction
+        with transaction.atomic():
+            File.objects.filter(pk__in=[item.pk for item in files]).delete()
+            Folder.objects.filter(pk__in=[item.pk for item in folders]).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class StorageDeletionError(Exception):
     """Internal exception used to avoid exposing provider error details."""
+
+
+class FolderTrashView(APIView):
+    permission_classes=[IsAuthenticated]
+    def get(self,request):
+        items=Folder.objects.filter(user=request.user,deleted_at__isnull=False).order_by('-deleted_at')
+        return Response(FolderSerializer(items,many=True).data)
+
+class FolderRestoreView(APIView):
+    permission_classes=[IsAuthenticated]
+    def post(self,request,pk):
+        folder=get_object_or_404(Folder,pk=pk,user=request.user,deleted_at__isnull=False)
+        now=folder.deleted_at
+        stack=[folder]
+        while stack:
+            current=stack.pop(); current.deleted_at=None; current.save(update_fields=['deleted_at'])
+            File.objects.filter(folder=current,user=request.user,deleted_at=now).update(deleted_at=None)
+            stack.extend(Folder.objects.filter(parent=current,user=request.user,deleted_at=now))
+        return Response(FolderSerializer(folder).data)

@@ -12,7 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from .serializers import FileSerializer
-from .models import File, UploadSession
+from .models import File, ShareLink, UploadSession
 from folders.models import Folder
 from users.views import get_s3_client
 
@@ -34,13 +34,13 @@ def storage_client(request):
     return client, connection, None
 
 
-def create_upload_session(*, user, folder, name, size, content_type, is_multipart, multipart_upload_id=''):
+def create_upload_session(*, user, folder, name, size, content_type, is_multipart, multipart_upload_id='', part_count=0):
     prefix = f'{user.id}/' + (f'{folder.id}/' if folder else '')
     object_key = f'{prefix}{uuid.uuid4().hex}-{name}'
     return UploadSession.objects.create(
         user=user, folder=folder, object_key=object_key, name=name, size=size,
         content_type=content_type, is_multipart=is_multipart,
-        multipart_upload_id=multipart_upload_id,
+        multipart_upload_id=multipart_upload_id, part_count=part_count,
     )
 
 
@@ -68,6 +68,16 @@ class FilePresignUploadView(APIView):
             return Response({'name': [exc.detail if hasattr(exc, 'detail') else str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         if size < 0:
             return Response({'size': ['File size cannot be negative.']}, status=status.HTTP_400_BAD_REQUEST)
+        if settings.STORAGE_QUOTA_BYTES > 0:
+            from django.db.models import Sum
+            used = File.objects.filter(user=request.user, deleted_at__isnull=True).aggregate(total=Sum('size'))['total'] or 0
+            if used + size > settings.STORAGE_QUOTA_BYTES:
+                return Response({'detail': 'Storage quota exceeded.'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        if settings.STORAGE_QUOTA_BYTES > 0:
+            from django.db.models import Sum
+            used = File.objects.filter(user=request.user, deleted_at__isnull=True).aggregate(total=Sum('size'))['total'] or 0
+            if used + size > settings.STORAGE_QUOTA_BYTES:
+                return Response({'detail': 'Storage quota exceeded.'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         if size > settings.MAX_UPLOAD_SIZE_BYTES:
             return Response({'size': ['File exceeds the maximum upload size.']}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         folder_id = request.data.get('folder')
@@ -140,6 +150,11 @@ class FileMultipartInitiateView(APIView):
             return Response({'size': ['A valid file size is required.']}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             return Response({'name': [exc.detail if hasattr(exc, 'detail') else str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+        if settings.STORAGE_QUOTA_BYTES > 0:
+            from django.db.models import Sum
+            used = File.objects.filter(user=request.user, deleted_at__isnull=True).aggregate(total=Sum('size'))['total'] or 0
+            if used + size > settings.STORAGE_QUOTA_BYTES:
+                return Response({'detail': 'Storage quota exceeded.'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         if size <= MULTIPART_PART_SIZE or size > settings.MAX_UPLOAD_SIZE_BYTES:
             return Response({'size': ['Multipart upload requires a file larger than 8 MB and within the configured maximum.']}, status=status.HTTP_400_BAD_REQUEST)
         folder_id = request.data.get('folder')
@@ -164,7 +179,7 @@ class FileMultipartInitiateView(APIView):
             except (ClientError, BotoCoreError):
                 pass
             return Response({'detail': 'Unable to create multipart upload links.'}, status=status.HTTP_502_BAD_GATEWAY)
-        session = UploadSession.objects.create(user=request.user, folder=folder, object_key=temporary_key, name=safe_name, size=size, content_type=content_type, is_multipart=True, multipart_upload_id=result['UploadId'])
+        session = UploadSession.objects.create(user=request.user, folder=folder, object_key=temporary_key, name=safe_name, size=size, content_type=content_type, is_multipart=True, multipart_upload_id=result['UploadId'], part_count=part_count)
         return Response({'upload_id': result['UploadId'], 'object_key': session.object_key, 'part_size': MULTIPART_PART_SIZE, 'parts': urls, 'name': safe_name, 'size': size, 'folder': folder.id if folder else None, 'expires_in': 900})
 
 
@@ -196,6 +211,9 @@ class FileMultipartCompleteView(APIView):
         session, error = pending_session_or_error(request, key, multipart=True, upload_id=upload_id)
         if error:
             return error
+        expected_parts = set(range(1, session.part_count + 1))
+        if set(seen) != expected_parts:
+            return Response({'parts': ['All expected multipart parts must be present exactly once.']}, status=status.HTTP_400_BAD_REQUEST)
         try:
             client.complete_multipart_upload(Bucket=connection.bucket_name, Key=key, UploadId=upload_id, MultipartUpload={'Parts': normalized})
             head = client.head_object(Bucket=connection.bucket_name, Key=key)
@@ -352,3 +370,33 @@ class FilePermanentDeleteView(APIView):
             return Response({'detail': 'S3 delete failed. File metadata was preserved.'}, status=status.HTTP_502_BAD_GATEWAY)
         record.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class FileSearchView(APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        q = request.query_params.get('q','').strip()
+        if len(q) < 1: return Response({'files': [], 'folders': []})
+        from folders.models import Folder
+        files = File.objects.filter(user=request.user, deleted_at__isnull=True, name__icontains=q).order_by('-uploaded_at')[:50]
+        folders = Folder.objects.filter(user=request.user, deleted_at__isnull=True, name__icontains=q).order_by('name')[:50]
+        return Response({'files': FileSerializer(files,many=True,context={'request':request}).data, 'folders': [{'id':x.id,'name':x.name,'parent':x.parent_id} for x in folders]})
+
+class FileShareView(APIView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request, pk):
+        record=get_object_or_404(File,pk=pk,user=request.user,deleted_at__isnull=True)
+        expires=request.data.get('expires_at')
+        link=ShareLink.objects.create(file=record,created_by=request.user,expires_at=expires or None)
+        return Response({'token':str(link.token),'url':request.build_absolute_uri('/share/'+str(link.token)+'/'),'expires_at':link.expires_at},status=status.HTTP_201_CREATED)
+
+class SharedFileDownloadView(APIView):
+    permission_classes = []
+    authentication_classes = []
+    def get(self, request, token):
+        link=get_object_or_404(ShareLink,token=token,is_active=True)
+        if not link.valid(): return Response({'detail':'This share link has expired.'},status=status.HTTP_410_GONE)
+        client, connection = get_s3_client(link.file.user)
+        if not client or not connection: return Response({'detail':'Storage unavailable.'},status=status.HTTP_502_BAD_GATEWAY)
+        url=client.generate_presigned_url('get_object',Params={'Bucket':connection.bucket_name,'Key':link.file.object_key},ExpiresIn=300)
+        return Response({'name':link.file.name,'url':url,'expires_in':300})
