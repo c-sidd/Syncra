@@ -20,6 +20,12 @@ class File(models.Model):
     def __str__(self):
         return self.name
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'deleted_at']),
+            models.Index(fields=['user', 'folder']),
+        ]
+
 
 def upload_expiry():
     return timezone.now() + timedelta(minutes=20)
@@ -40,9 +46,16 @@ class UploadSession(models.Model):
     content_type = models.CharField(max_length=255, default='application/octet-stream')
     is_multipart = models.BooleanField(default=False)
     multipart_upload_id = models.CharField(max_length=255, blank=True)
+    part_count = models.PositiveIntegerField(default=0)
     state = models.CharField(max_length=16, choices=State.choices, default=State.PENDING)
     expires_at = models.DateTimeField(default=upload_expiry)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def is_active(self):
         return self.state == self.State.PENDING and self.expires_at > timezone.now()
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['state', 'expires_at']),
+            models.Index(fields=['user', 'state']),
+        ]
