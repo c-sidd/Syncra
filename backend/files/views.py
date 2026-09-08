@@ -150,6 +150,11 @@ class FileMultipartInitiateView(APIView):
             return Response({'size': ['A valid file size is required.']}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             return Response({'name': [exc.detail if hasattr(exc, 'detail') else str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+        if settings.STORAGE_QUOTA_BYTES > 0:
+            from django.db.models import Sum
+            used = File.objects.filter(user=request.user, deleted_at__isnull=True).aggregate(total=Sum('size'))['total'] or 0
+            if used + size > settings.STORAGE_QUOTA_BYTES:
+                return Response({'detail': 'Storage quota exceeded.'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         if size <= MULTIPART_PART_SIZE or size > settings.MAX_UPLOAD_SIZE_BYTES:
             return Response({'size': ['Multipart upload requires a file larger than 8 MB and within the configured maximum.']}, status=status.HTTP_400_BAD_REQUEST)
         folder_id = request.data.get('folder')
