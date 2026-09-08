@@ -118,28 +118,37 @@ class FolderDetailView(APIView):
     def delete(self, request, pk):
         folder = get_object_or_404(Folder, pk=pk, user=request.user)
         client, connection = get_s3_client(request.user)
-
         if not client or not connection:
             return Response({'detail': 'S3 storage is not configured.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        def delete_folder_contents(current):
-            for file_record in File.objects.filter(folder=current, user=request.user):
-                try:
-                    client.delete_object(Bucket=connection.bucket_name, Key=file_record.object_key)
-                except (ClientError, BotoCoreError) as exc:
-                    raise StorageDeletionError from exc
-                file_record.delete()
-
-            for child in Folder.objects.filter(parent=current, user=request.user):
-                delete_folder_contents(child)
-                child.delete()
+        stack = [folder]
+        folders = []
+        files = []
+        while stack:
+            current = stack.pop()
+            folders.append(current)
+            stack.extend(Folder.objects.filter(parent=current, user=request.user))
+            files.extend(File.objects.filter(folder=current, user=request.user))
 
         try:
-            delete_folder_contents(folder)
-            folder.delete()
-        except StorageDeletionError:
-            return Response({'detail': 'S3 deletion failed. Folder metadata was preserved for the remaining objects.'}, status=status.HTTP_502_BAD_GATEWAY)
+            keys = [{'Key': item.object_key} for item in files]
+            for offset in range(0, len(keys), 1000):
+                batch = keys[offset:offset + 1000]
+                if not batch:
+                    continue
+                response = client.delete_objects(
+                    Bucket=connection.bucket_name,
+                    Delete={'Objects': batch, 'Quiet': True},
+                )
+                if response.get('Errors'):
+                    raise StorageDeletionError
+        except (ClientError, BotoCoreError, StorageDeletionError):
+            return Response({'detail': 'S3 deletion failed. Folder metadata was not removed.'}, status=status.HTTP_502_BAD_GATEWAY)
 
+        from django.db import transaction
+        with transaction.atomic():
+            File.objects.filter(pk__in=[item.pk for item in files]).delete()
+            Folder.objects.filter(pk__in=[item.pk for item in folders]).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
