@@ -56,7 +56,8 @@ class AWSConnectionView(APIView):
         connection = AWSConnection.objects.filter(user=request.user).first()
         if not connection:
             return Response({'connected': False})
-        return Response({'connected': True, 'id': connection.id, 'name': connection.name, 'access_key_id': connection.access_key_id, 'region': connection.region, 'bucket_name': connection.bucket_name, 'created_at': connection.created_at, 'updated_at': connection.updated_at})
+        masked_key = f'{connection.access_key_id[:4]}****{connection.access_key_id[-4:]}' if len(connection.access_key_id) > 8 else '****'
+        return Response({'connected': True, 'id': connection.id, 'name': connection.name, 'access_key_id': masked_key, 'region': connection.region, 'bucket_name': connection.bucket_name, 'created_at': connection.created_at, 'updated_at': connection.updated_at})
 
     def post(self, request):
         access_key_id = request.data.get('access_key_id', '').strip()
