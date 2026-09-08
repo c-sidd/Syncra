@@ -34,13 +34,13 @@ def storage_client(request):
     return client, connection, None
 
 
-def create_upload_session(*, user, folder, name, size, content_type, is_multipart, multipart_upload_id=''):
+def create_upload_session(*, user, folder, name, size, content_type, is_multipart, multipart_upload_id='', part_count=0):
     prefix = f'{user.id}/' + (f'{folder.id}/' if folder else '')
     object_key = f'{prefix}{uuid.uuid4().hex}-{name}'
     return UploadSession.objects.create(
         user=user, folder=folder, object_key=object_key, name=name, size=size,
         content_type=content_type, is_multipart=is_multipart,
-        multipart_upload_id=multipart_upload_id,
+        multipart_upload_id=multipart_upload_id, part_count=part_count,
     )
 
 
@@ -68,6 +68,11 @@ class FilePresignUploadView(APIView):
             return Response({'name': [exc.detail if hasattr(exc, 'detail') else str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         if size < 0:
             return Response({'size': ['File size cannot be negative.']}, status=status.HTTP_400_BAD_REQUEST)
+        if settings.STORAGE_QUOTA_BYTES > 0:
+            from django.db.models import Sum
+            used = File.objects.filter(user=request.user, deleted_at__isnull=True).aggregate(total=Sum('size'))['total'] or 0
+            if used + size > settings.STORAGE_QUOTA_BYTES:
+                return Response({'detail': 'Storage quota exceeded.'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         if size > settings.MAX_UPLOAD_SIZE_BYTES:
             return Response({'size': ['File exceeds the maximum upload size.']}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         folder_id = request.data.get('folder')
@@ -164,7 +169,7 @@ class FileMultipartInitiateView(APIView):
             except (ClientError, BotoCoreError):
                 pass
             return Response({'detail': 'Unable to create multipart upload links.'}, status=status.HTTP_502_BAD_GATEWAY)
-        session = UploadSession.objects.create(user=request.user, folder=folder, object_key=temporary_key, name=safe_name, size=size, content_type=content_type, is_multipart=True, multipart_upload_id=result['UploadId'])
+        session = UploadSession.objects.create(user=request.user, folder=folder, object_key=temporary_key, name=safe_name, size=size, content_type=content_type, is_multipart=True, multipart_upload_id=result['UploadId'], part_count=part_count)
         return Response({'upload_id': result['UploadId'], 'object_key': session.object_key, 'part_size': MULTIPART_PART_SIZE, 'parts': urls, 'name': safe_name, 'size': size, 'folder': folder.id if folder else None, 'expires_in': 900})
 
 
@@ -196,6 +201,9 @@ class FileMultipartCompleteView(APIView):
         session, error = pending_session_or_error(request, key, multipart=True, upload_id=upload_id)
         if error:
             return error
+        expected_parts = set(range(1, session.part_count + 1))
+        if set(seen) != expected_parts:
+            return Response({'parts': ['All expected multipart parts must be present exactly once.']}, status=status.HTTP_400_BAD_REQUEST)
         try:
             client.complete_multipart_upload(Bucket=connection.bucket_name, Key=key, UploadId=upload_id, MultipartUpload={'Parts': normalized})
             head = client.head_object(Bucket=connection.bucket_name, Key=key)
