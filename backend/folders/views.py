@@ -164,3 +164,22 @@ class FolderDetailView(APIView):
 
 class StorageDeletionError(Exception):
     """Internal exception used to avoid exposing provider error details."""
+
+
+class FolderTrashView(APIView):
+    permission_classes=[IsAuthenticated]
+    def get(self,request):
+        items=Folder.objects.filter(user=request.user,deleted_at__isnull=False).order_by('-deleted_at')
+        return Response(FolderSerializer(items,many=True).data)
+
+class FolderRestoreView(APIView):
+    permission_classes=[IsAuthenticated]
+    def post(self,request,pk):
+        folder=get_object_or_404(Folder,pk=pk,user=request.user,deleted_at__isnull=False)
+        now=folder.deleted_at
+        stack=[folder]
+        while stack:
+            current=stack.pop(); current.deleted_at=None; current.save(update_fields=['deleted_at'])
+            File.objects.filter(folder=current,user=request.user,deleted_at=now).update(deleted_at=None)
+            stack.extend(Folder.objects.filter(parent=current,user=request.user,deleted_at=now))
+        return Response(FolderSerializer(folder).data)
