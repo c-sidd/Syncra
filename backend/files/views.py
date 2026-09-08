@@ -73,6 +73,11 @@ class FilePresignUploadView(APIView):
             used = File.objects.filter(user=request.user, deleted_at__isnull=True).aggregate(total=Sum('size'))['total'] or 0
             if used + size > settings.STORAGE_QUOTA_BYTES:
                 return Response({'detail': 'Storage quota exceeded.'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        if settings.STORAGE_QUOTA_BYTES > 0:
+            from django.db.models import Sum
+            used = File.objects.filter(user=request.user, deleted_at__isnull=True).aggregate(total=Sum('size'))['total'] or 0
+            if used + size > settings.STORAGE_QUOTA_BYTES:
+                return Response({'detail': 'Storage quota exceeded.'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         if size > settings.MAX_UPLOAD_SIZE_BYTES:
             return Response({'size': ['File exceeds the maximum upload size.']}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         folder_id = request.data.get('folder')
