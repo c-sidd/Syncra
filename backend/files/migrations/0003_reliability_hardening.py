@@ -2,7 +2,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    dependencies = [('files', '0002_file_object_key_file_storage_class_and_more')]
+    dependencies = [('files', '0001_initial')]
 
     operations = [
         migrations.AddField(
