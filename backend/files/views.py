@@ -12,7 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from .serializers import FileSerializer
-from .models import File, UploadSession
+from .models import File, ShareLink, UploadSession
 from folders.models import Folder
 from users.views import get_s3_client
 
@@ -370,3 +370,33 @@ class FilePermanentDeleteView(APIView):
             return Response({'detail': 'S3 delete failed. File metadata was preserved.'}, status=status.HTTP_502_BAD_GATEWAY)
         record.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class FileSearchView(APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        q = request.query_params.get('q','').strip()
+        if len(q) < 1: return Response({'files': [], 'folders': []})
+        from folders.models import Folder
+        files = File.objects.filter(user=request.user, deleted_at__isnull=True, name__icontains=q).order_by('-uploaded_at')[:50]
+        folders = Folder.objects.filter(user=request.user, deleted_at__isnull=True, name__icontains=q).order_by('name')[:50]
+        return Response({'files': FileSerializer(files,many=True,context={'request':request}).data, 'folders': [{'id':x.id,'name':x.name,'parent':x.parent_id} for x in folders]})
+
+class FileShareView(APIView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request, pk):
+        record=get_object_or_404(File,pk=pk,user=request.user,deleted_at__isnull=True)
+        expires=request.data.get('expires_at')
+        link=ShareLink.objects.create(file=record,created_by=request.user,expires_at=expires or None)
+        return Response({'token':str(link.token),'url':request.build_absolute_uri('/share/'+str(link.token)+'/'),'expires_at':link.expires_at},status=status.HTTP_201_CREATED)
+
+class SharedFileDownloadView(APIView):
+    permission_classes = []
+    authentication_classes = []
+    def get(self, request, token):
+        link=get_object_or_404(ShareLink,token=token,is_active=True)
+        if not link.valid(): return Response({'detail':'This share link has expired.'},status=status.HTTP_410_GONE)
+        client, connection = get_s3_client(link.file.user)
+        if not client or not connection: return Response({'detail':'Storage unavailable.'},status=status.HTTP_502_BAD_GATEWAY)
+        url=client.generate_presigned_url('get_object',Params={'Bucket':connection.bucket_name,'Key':link.file.object_key},ExpiresIn=300)
+        return Response({'name':link.file.name,'url':url,'expires_in':300})
