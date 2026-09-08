@@ -24,3 +24,7 @@ Thumbs.db
 node_modules/
 dist/
 build/
+
+# Local development databases
+*.sqlite3
+backend/db.sqlite3
