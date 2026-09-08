@@ -27,3 +27,14 @@ class Folder(models.Model):
     # String representation for admin panels and logging
     def __str__(self):
         return self.name
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'parent', 'name'],
+                name='unique_folder_name_per_parent',
+            )
+        ]
+        indexes = [
+            models.Index(fields=['user', 'parent']),
+        ]
