@@ -11,9 +11,15 @@ from .views import (
     TrashListView,
     FileRestoreView,
     FilePermanentDeleteView,
+    FileSearchView,
+    FileShareView,
+    SharedFileDownloadView,
 )
 
 urlpatterns = [
+    path('search/', FileSearchView.as_view(), name='file-search'),
+    path('shared/<uuid:token>/', SharedFileDownloadView.as_view(), name='shared-file'),
+    path('<int:pk>/share/', FileShareView.as_view(), name='file-share'),
     path('upload/', FileUploadView.as_view(), name='file-upload'),
     path('upload/presign/', FilePresignUploadView.as_view(), name='file-upload-presign'),
     path('upload/complete/', FileCompleteUploadView.as_view(), name='file-upload-complete'),
